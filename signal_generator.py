@@ -3,13 +3,27 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+import pandas as pd
+
 from agents.base import Direction
 from agents.smc_agent import _candles_to_dataframe, _find_swing_points
+from config.sl_config import (
+    SYMBOL_SL_RULES,
+    calculate_lot_size_for_symbol,
+    get_sl_config,
+)
+from config.symbols import resolve_symbol
 from signal_geometry import (
     coerce_direction,
     infer_direction_from_levels,
     validate_trade_levels,
 )
+
+DEFAULT_SWING_LOOKBACK = 5
+DEFAULT_ATR_PERIOD = 14
+DEFAULT_ATR_BUFFER_MULTIPLIER = 0.3
+DEFAULT_DEPOSIT = 200.0
+DEFAULT_LOT_SIZE = calculate_lot_size_for_symbol(DEFAULT_DEPOSIT, "XAUUSD")
 
 
 @dataclass(frozen=True)
@@ -24,6 +38,7 @@ class TradeSignal:
     tp3: float
     confidence: float
     reason: str
+    lot_size: float = DEFAULT_LOT_SIZE
 
     def __post_init__(self) -> None:
         resolved = infer_direction_from_levels(
@@ -56,6 +71,7 @@ class TradeSignal:
             "tp3": self.tp3,
             "confidence": self.confidence,
             "reason": self.reason,
+            "lot_size": self.lot_size,
         }
 
     def format(self) -> str:
@@ -67,10 +83,26 @@ class TradeSignal:
             f"TP1: {self.tp1:.2f}",
             f"TP2: {self.tp2:.2f}",
             f"TP3: {self.tp3:.2f}",
+            f"Lot Size: {self.lot_size:.2f}",
             f"Confidence: {self.confidence:.2f}",
             f"Reason: {self.reason}",
         ]
         return "\n".join(lines)
+
+
+@dataclass(frozen=True)
+class SLValidationResult:
+    signal: TradeSignal | None = None
+    rejection_reason: str | None = None
+
+    @property
+    def approved(self) -> bool:
+        return self.signal is not None
+
+
+def calculate_lot_size(deposit: float, symbol: str = "XAUUSD") -> float:
+    """Return fixed lot size for the given deposit and symbol."""
+    return calculate_lot_size_for_symbol(deposit, symbol)
 
 
 def resolve_signal_direction(signal: TradeSignal) -> Direction:
@@ -107,14 +139,52 @@ def align_trade_signal_direction(signal: TradeSignal) -> TradeSignal:
         tp3=signal.tp3,
         confidence=signal.confidence,
         reason=signal.reason,
+        lot_size=signal.lot_size,
     )
+
+
+def calculate_atr(df: pd.DataFrame, period: int = DEFAULT_ATR_PERIOD) -> float:
+    """Calculate the latest ATR value using Wilder's smoothing."""
+    if len(df) < period + 1:
+        raise ValueError(f"Need at least {period + 1} candles to calculate ATR({period})")
+
+    high = df["high"]
+    low = df["low"]
+    close = df["close"]
+    prev_close = close.shift(1)
+    true_range = pd.concat(
+        [
+            high - low,
+            (high - prev_close).abs(),
+            (low - prev_close).abs(),
+        ],
+        axis=1,
+    ).max(axis=1)
+    atr = true_range.ewm(alpha=1 / period, min_periods=period, adjust=False).mean()
+    value = atr.iloc[-1]
+    if pd.isna(value):
+        raise ValueError("ATR calculation returned no value")
+    return float(value)
+
+
+def price_distance_pips(distance: float, pip_size: float) -> float:
+    return abs(distance) / pip_size
 
 
 class SignalGenerator:
     """Builds R-multiple trade signals from market context and direction."""
 
-    def __init__(self, swing_lookback: int = 2) -> None:
+    def __init__(
+        self,
+        swing_lookback: int = DEFAULT_SWING_LOOKBACK,
+        atr_period: int = DEFAULT_ATR_PERIOD,
+        atr_buffer_multiplier: float = DEFAULT_ATR_BUFFER_MULTIPLIER,
+        deposit: float = DEFAULT_DEPOSIT,
+    ) -> None:
         self.swing_lookback = swing_lookback
+        self.atr_period = atr_period
+        self.atr_buffer_multiplier = atr_buffer_multiplier
+        self.deposit = deposit
 
     def generate(
         self,
@@ -122,93 +192,146 @@ class SignalGenerator:
         direction: Direction,
         confidence: float,
         reason: str = "",
-    ) -> TradeSignal:
+    ) -> SLValidationResult:
         direction = coerce_direction(direction)
         if direction == Direction.NEUTRAL:
-            raise ValueError("Cannot generate a trade signal for NEUTRAL direction")
+            return SLValidationResult(
+                rejection_reason="Cannot generate a trade signal for NEUTRAL direction",
+            )
 
-        df = _candles_to_dataframe(context)
-        entry = float(df.iloc[-1]["close"])
-        swing_highs, swing_lows = _find_swing_points(df, lookback=self.swing_lookback)
+        symbol = str(context.get("symbol", "UNKNOWN")).upper()
+        try:
+            display_symbol = resolve_symbol(symbol).display
+        except ValueError:
+            display_symbol = symbol
+
+        try:
+            df = _candles_to_dataframe(context)
+            entry = float(df.iloc[-1]["close"])
+            atr = calculate_atr(df, period=self.atr_period)
+            atr_buffer = atr * self.atr_buffer_multiplier
+            swing_highs, swing_lows = _find_swing_points(df, lookback=self.swing_lookback)
+        except ValueError as exc:
+            return SLValidationResult(rejection_reason=str(exc))
 
         if direction == Direction.LONG:
-            signal = self._build_long_signal(
+            if not swing_lows:
+                return SLValidationResult(
+                    rejection_reason="No swing low found for LONG stop loss",
+                )
+            swing_price = swing_lows[-1].price
+            stop_loss = swing_price - atr_buffer
+            if stop_loss >= entry:
+                return SLValidationResult(
+                    rejection_reason="Buffered stop loss must be below entry for LONG signal",
+                )
+        else:
+            if not swing_highs:
+                return SLValidationResult(
+                    rejection_reason="No swing high found for SHORT stop loss",
+                )
+            swing_price = swing_highs[-1].price
+            stop_loss = swing_price + atr_buffer
+            if stop_loss <= entry:
+                return SLValidationResult(
+                    rejection_reason="Buffered stop loss must be above entry for SHORT signal",
+                )
+
+        return self.validate_sl(
+            symbol=display_symbol,
+            direction=direction,
+            entry=entry,
+            swing_price=swing_price,
+            stop_loss=stop_loss,
+            confidence=confidence,
+            reason=reason,
+            atr_buffer=atr_buffer,
+        )
+
+    def validate_sl(
+        self,
+        *,
+        symbol: str,
+        direction: Direction,
+        entry: float,
+        swing_price: float,
+        stop_loss: float,
+        confidence: float,
+        reason: str = "",
+        atr_buffer: float | None = None,
+    ) -> SLValidationResult:
+        """Validate SL distance and build the final trade signal."""
+        direction = coerce_direction(direction)
+        sl_config = get_sl_config(symbol.upper())
+
+        if direction == Direction.LONG and stop_loss >= entry:
+            return SLValidationResult(
+                rejection_reason="Stop loss must be below entry for LONG signal",
+            )
+        if direction == Direction.SHORT and stop_loss <= entry:
+            return SLValidationResult(
+                rejection_reason="Stop loss must be above entry for SHORT signal",
+            )
+
+        risk = abs(entry - stop_loss)
+        lot_size = calculate_lot_size_for_symbol(self.deposit, symbol)
+
+        if sl_config is not None:
+            sl_pips = price_distance_pips(risk, sl_config.pip_size)
+            if sl_pips < sl_config.min_sl_pips:
+                return SLValidationResult(
+                    rejection_reason=(
+                        f"SL rejected: {sl_pips:.1f} pips "
+                        f"below minimum {sl_config.min_sl_pips:.0f} pips for {symbol}"
+                    ),
+                )
+
+            if sl_pips > sl_config.max_sl_pips:
+                return SLValidationResult(
+                    rejection_reason=(
+                        f"SL rejected: {sl_pips:.1f} pips "
+                        f"exceeds maximum {sl_config.max_sl_pips:.0f} pips for {symbol}"
+                    ),
+                )
+
+        buffer_note = ""
+        if atr_buffer is not None:
+            buffer_note = f", ATR buffer {atr_buffer:.2f}"
+
+        if direction == Direction.LONG:
+            signal_reason = reason or (
+                f"LONG signal: SL at swing low {swing_price:.2f}{buffer_note}, "
+                f"risk {risk:.2f} ({lot_size:.2f} lot), targets at 1R/2R/3R"
+            )
+            signal = TradeSignal(
+                direction=Direction.LONG,
                 entry=entry,
-                swing_lows=swing_lows,
+                stop_loss=stop_loss,
+                tp1=entry + risk,
+                tp2=entry + risk * 2,
+                tp3=entry + risk * 3,
                 confidence=confidence,
-                reason=reason,
+                reason=signal_reason,
+                lot_size=lot_size,
             )
         else:
-            signal = self._build_short_signal(
+            signal_reason = reason or (
+                f"SHORT signal: SL at swing high {swing_price:.2f}{buffer_note}, "
+                f"risk {risk:.2f} ({lot_size:.2f} lot), targets at 1R/2R/3R"
+            )
+            signal = TradeSignal(
+                direction=Direction.SHORT,
                 entry=entry,
-                swing_highs=swing_highs,
+                stop_loss=stop_loss,
+                tp1=entry - risk,
+                tp2=entry - risk * 2,
+                tp3=entry - risk * 3,
                 confidence=confidence,
-                reason=reason,
+                reason=signal_reason,
+                lot_size=lot_size,
             )
 
-        return align_trade_signal_direction(signal)
-
-    def _build_long_signal(
-        self,
-        entry: float,
-        swing_lows: list,
-        confidence: float,
-        reason: str,
-    ) -> TradeSignal:
-        if not swing_lows:
-            raise ValueError("No swing low found for LONG stop loss")
-
-        stop_loss = swing_lows[-1].price
-        if stop_loss >= entry:
-            raise ValueError("Last swing low must be below entry for LONG signal")
-
-        risk = entry - stop_loss
-        signal_reason = reason or (
-            f"LONG signal: stop loss at last swing low ({stop_loss:.2f}), "
-            f"risk {risk:.2f}, targets at 1R/2R/3R"
-        )
-
-        return TradeSignal(
-            direction=Direction.LONG,
-            entry=entry,
-            stop_loss=stop_loss,
-            tp1=entry + risk,
-            tp2=entry + risk * 2,
-            tp3=entry + risk * 3,
-            confidence=confidence,
-            reason=signal_reason,
-        )
-
-    def _build_short_signal(
-        self,
-        entry: float,
-        swing_highs: list,
-        confidence: float,
-        reason: str,
-    ) -> TradeSignal:
-        if not swing_highs:
-            raise ValueError("No swing high found for SHORT stop loss")
-
-        stop_loss = swing_highs[-1].price
-        if stop_loss <= entry:
-            raise ValueError("Last swing high must be above entry for SHORT signal")
-
-        risk = stop_loss - entry
-        signal_reason = reason or (
-            f"SHORT signal: stop loss at last swing high ({stop_loss:.2f}), "
-            f"risk {risk:.2f}, targets at 1R/2R/3R"
-        )
-
-        return TradeSignal(
-            direction=Direction.SHORT,
-            entry=entry,
-            stop_loss=stop_loss,
-            tp1=entry - risk,
-            tp2=entry - risk * 2,
-            tp3=entry - risk * 3,
-            confidence=confidence,
-            reason=signal_reason,
-        )
+        return SLValidationResult(signal=align_trade_signal_direction(signal))
 
     def print_signal(
         self,
@@ -222,6 +345,11 @@ class SignalGenerator:
             print("No trade signal generated (NEUTRAL decision)")
             return None
 
-        signal = self.generate(context, direction, confidence, reason)
-        print(signal.format())
-        return signal
+        result = self.generate(context, direction, confidence, reason)
+        if result.signal is None:
+            print("=== TRADE SIGNAL ===")
+            print(result.rejection_reason or "Signal rejected")
+            return None
+
+        print(result.signal.format())
+        return result.signal

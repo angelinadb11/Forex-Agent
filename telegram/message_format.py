@@ -1,9 +1,19 @@
 from __future__ import annotations
 
 import random
+from datetime import datetime
 
 from agents.base import AgentResult, Direction
 from signal_generator import TradeSignal, resolve_signal_direction
+from tracking.trade_pnl import (
+    DEFAULT_LOT_SIZE,
+    distance_to_sl_pips,
+    pip_size_for_symbol,
+    pips_to_dollars,
+    price_distance_pips,
+    signed_pips_long,
+    signed_pips_short,
+)
 
 BULLISH_ANALYSIS_PHRASES = (
     "Liquidity sweep confirmed.",
@@ -126,6 +136,162 @@ def format_high_risk_update(
         "Consider closing the position manually.",
     ]
     return "\n".join(lines)
+
+
+def format_open_time_label(open_time: str) -> str:
+    try:
+        parsed = datetime.fromisoformat(open_time.replace("Z", "+00:00"))
+        return parsed.strftime("%d.%m.%Y %H:%M UTC")
+    except ValueError:
+        return open_time
+
+
+def format_trade_direction_label(direction: Direction) -> str:
+    return direction.value.upper()
+
+
+def format_signal_header(open_time: str, direction: Direction) -> str:
+    return f"{format_open_time_label(open_time)} {format_trade_direction_label(direction)}"
+
+
+def format_trend_change_warning(
+    *,
+    open_time: str,
+    direction: Direction,
+    current_price: float,
+    reason: str = "Різка зміна тренду на H1",
+) -> str:
+    return "\n".join(
+        [
+            "⚠️ УВАГА — Зміна тренду",
+            f"└ Причина: {reason}",
+            f"└ Поточна ціна: {current_price:.2f}",
+            "",
+            "📌 Що робити зараз:",
+            "• Якщо ти в плюсі — закрий позицію вручну",
+            "• Якщо SL ще не перенесено на entry —",
+            "  зроби це зараз",
+            "• Не додавай до позиції",
+        ]
+    )
+
+
+def format_sl_proximity_warning(
+    *,
+    current_price: float,
+    remaining_pips: float,
+) -> str:
+    return "\n".join(
+        [
+            "⚠️ SL близько",
+            f"└ Поточна ціна: {current_price:.2f}",
+            f"└ До SL залишилось: {remaining_pips:.1f} pips",
+            "",
+            "📌 Що робити зараз:",
+            "• Можеш закрити вручну щоб зменшити збиток",
+            "• Не пересувай SL далі — це збільшить ризик",
+            "• Чекай рішення ринку",
+        ]
+    )
+
+
+def format_stop_loss_reply(
+    *,
+    result_dollars: float,
+) -> str:
+    return "\n".join(
+        [
+            "❌ СТОП-ЛОСС",
+            f"└ Результат: -${result_dollars:.2f}",
+            "",
+            "📌 Що робити зараз:",
+            "• Не намагайся відіграти одразу",
+            "• Чекай наступного сигналу системи",
+            "• Це нормальна частина торгівлі 💪",
+            "• Один збиток не вирішує результат місяця",
+        ]
+    )
+
+
+def format_take_profit_reply(
+    *,
+    tp_level: int,
+    open_time: str,
+    direction: Direction,
+    entry: float,
+    tp_price: float,
+    move_pips: float,
+    tp1: float,
+    tp2: float,
+    tp3: float,
+) -> str:
+    move_pips = abs(move_pips)
+
+    if tp_level == 1:
+        return "\n".join(
+            [
+                "✅ ТЕЙК-ПРОФІТ 1",
+                f"└ Сигнал від: {format_signal_header(open_time, direction)}",
+                f"└ TP1 хітнуло: {tp_price:.2f}",
+                f"└ Хід: +{move_pips:.1f} pips",
+                "",
+                "📌 Що робити зараз:",
+                f"• Перенеси SL на точку входу {entry:.2f}",
+                f"• Решта позиції йде до TP2: {tp2:.2f}",
+                "• Ти вже в безризиковій угоді 🎯",
+            ]
+        )
+
+    if tp_level == 2:
+        return "\n".join(
+            [
+                "✅ ТЕЙК-ПРОФІТ 2",
+                f"└ TP2 хітнуло: {tp_price:.2f}",
+                f"└ Хід: +{move_pips:.1f} pips",
+                "",
+                "📌 Що робити зараз:",
+                "• Закрий 50% позиції або всю",
+                f"• Якщо тримаєш — перенеси SL на TP1: {tp1:.2f}",
+                f"• До TP3: {tp3:.2f}",
+            ]
+        )
+
+    return "\n".join(
+        [
+            f"✅ ТЕЙК-ПРОФІТ {tp_level}",
+            f"└ Сигнал від: {format_signal_header(open_time, direction)}",
+            f"└ TP{tp_level} хітнуло: {tp_price:.2f}",
+            f"└ Хід: +{move_pips:.1f} pips",
+            "",
+            "📌 Що робити зараз:",
+            "• Зафіксуй прибуток — закрий позицію або решту",
+            "• Не чекай TP3 якщо ринок уже дав хороший результат",
+        ]
+    )
+
+
+def trade_move_pips(
+    *,
+    symbol: str,
+    direction: Direction,
+    entry: float,
+    price: float,
+) -> float:
+    pip_size = pip_size_for_symbol(symbol)
+    if pip_size is None:
+        return abs(price - entry)
+    if direction == Direction.LONG:
+        return signed_pips_long(entry, price, pip_size)
+    return signed_pips_short(entry, price, pip_size)
+
+
+def trade_result_dollars(
+    *,
+    symbol: str,
+    pips: float,
+    lot_size: float = DEFAULT_LOT_SIZE,
+) -> float:
+    return pips_to_dollars(symbol, pips, lot_size)
 
 
 def format_agent_result(agent_name: str, result: AgentResult) -> str:

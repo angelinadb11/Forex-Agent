@@ -14,7 +14,6 @@ from telegram.message_format import (
     format_agent_result,
     format_agent_summary,
     format_trade_signal as build_trade_signal_message,
-    format_trade_update as build_trade_update_message,
     format_trade_update_warning as build_trade_update_warning_message,
     format_high_risk_update as build_high_risk_update_message,
 )
@@ -159,16 +158,25 @@ class TelegramBot:
             return None
         return cls(token=token, chat_id=chat_id)
 
-    def send_message(self, text: str) -> None:
+    def send_message(
+        self,
+        text: str,
+        *,
+        reply_to_message_id: int | None = None,
+    ) -> int:
         """Send a plain-text message to the configured chat."""
         url = TELEGRAM_API_URL.format(token=self.token)
+        payload: dict = {
+            "chat_id": self.chat_id,
+            "text": text,
+        }
+        if reply_to_message_id is not None:
+            payload["reply_to_message_id"] = reply_to_message_id
+
         try:
             response = requests.post(
                 url,
-                json={
-                    "chat_id": self.chat_id,
-                    "text": text,
-                },
+                json=payload,
                 timeout=30,
             )
         except requests.RequestException as exc:
@@ -176,9 +184,9 @@ class TelegramBot:
 
         response_body = response.text
         try:
-            payload = response.json()
+            body = response.json()
         except ValueError:
-            payload = None
+            body = None
 
         if not response.ok:
             raise TelegramError(
@@ -187,12 +195,14 @@ class TelegramBot:
                 response_body=response_body,
             )
 
-        if not payload or not payload.get("ok"):
+        if not body or not body.get("ok"):
             raise TelegramError(
-                f"Telegram API error: {payload or response_body}",
+                f"Telegram API error: {body or response_body}",
                 status_code=response.status_code,
                 response_body=response_body,
             )
+
+        return int(body["result"]["message_id"])
 
     def test_connection(self) -> None:
         """Send a connection test message to the configured chat."""
@@ -257,7 +267,7 @@ class TelegramBot:
         timeframe: str,
         agent_results: dict[str, AgentResult] | None = None,
         news_warning: str | None = None,
-    ) -> None:
+    ) -> int:
         """Format and send a generated trade signal."""
         if signal.confidence < 0.70:
             raise ValueError("Signal confidence below 70% minimum")
@@ -269,7 +279,16 @@ class TelegramBot:
             agent_results,
             news_warning,
         )
-        self.send_message(message)
+        return self.send_message(message)
+
+    def send_trade_reply(
+        self,
+        text: str,
+        *,
+        reply_to_message_id: int | None,
+    ) -> int:
+        """Send a reply linked to the original signal message."""
+        return self.send_message(text, reply_to_message_id=reply_to_message_id)
 
     def send_no_trade(self, symbol: str, confidence: float, reason: str = "") -> None:
         """Notify that no trade signal was sent."""
@@ -284,19 +303,105 @@ class TelegramBot:
             lines.append(reason)
         self.send_message("\n".join(lines))
 
-    def send_trade_update(self, symbol: str, direction: Direction, event: str) -> None:
-        """Send a trade monitor update for TP/SL events."""
-        self.send_message(build_trade_update_message(symbol, direction, event))
+    def send_trend_change_warning(
+        self,
+        *,
+        reply_to_message_id: int | None,
+        open_time: str,
+        direction: Direction,
+        current_price: float,
+        reason: str = "Різка зміна тренду на H1",
+    ) -> int:
+        from telegram.message_format import format_trend_change_warning
+
+        message = format_trend_change_warning(
+            open_time=open_time,
+            direction=direction,
+            current_price=current_price,
+            reason=reason,
+        )
+        return self.send_trade_reply(message, reply_to_message_id=reply_to_message_id)
+
+    def send_sl_proximity_warning(
+        self,
+        *,
+        reply_to_message_id: int | None,
+        current_price: float,
+        remaining_pips: float,
+    ) -> int:
+        from telegram.message_format import format_sl_proximity_warning
+
+        message = format_sl_proximity_warning(
+            current_price=current_price,
+            remaining_pips=remaining_pips,
+        )
+        return self.send_trade_reply(message, reply_to_message_id=reply_to_message_id)
+
+    def send_stop_loss_reply(
+        self,
+        trade,
+        *,
+        reply_to_message_id: int | None,
+    ) -> int:
+        from telegram.message_format import format_stop_loss_reply, trade_move_pips, trade_result_dollars
+
+        move_pips = abs(
+            trade_move_pips(
+                symbol=trade.symbol,
+                direction=trade.direction,
+                entry=trade.entry,
+                price=trade.initial_stop_loss,
+            )
+        )
+        result_dollars = trade_result_dollars(
+            symbol=trade.symbol,
+            pips=move_pips,
+            lot_size=trade.lot_size,
+        )
+        message = format_stop_loss_reply(result_dollars=result_dollars)
+        return self.send_trade_reply(message, reply_to_message_id=reply_to_message_id)
+
+    def send_take_profit_reply(
+        self,
+        trade,
+        *,
+        tp_level: int,
+        tp_price: float,
+        reply_to_message_id: int | None,
+    ) -> int:
+        from telegram.message_format import format_take_profit_reply, trade_move_pips
+
+        move_pips = trade_move_pips(
+            symbol=trade.symbol,
+            direction=trade.direction,
+            entry=trade.entry,
+            price=tp_price,
+        )
+        message = format_take_profit_reply(
+            tp_level=tp_level,
+            open_time=trade.open_time,
+            direction=trade.direction,
+            entry=trade.entry,
+            tp_price=tp_price,
+            move_pips=move_pips,
+            tp1=trade.tp1,
+            tp2=trade.tp2,
+            tp3=trade.tp3,
+        )
+        return self.send_trade_reply(message, reply_to_message_id=reply_to_message_id)
 
     def send_trade_update_warning(
         self,
         symbol: str,
         direction: Direction,
         reasons: list[str],
-    ) -> None:
+        *,
+        reply_to_message_id: int | None = None,
+    ) -> int:
         """Send a Level 1 informational warning for an active trade."""
-        self.send_message(
-            build_trade_update_warning_message(symbol, direction, reasons)
+        return self.send_message(
+            build_trade_update_warning_message(symbol, direction, reasons),
+            reply_to_message_id=reply_to_message_id,
         )
 
     def send_high_risk_update(
@@ -304,10 +409,13 @@ class TelegramBot:
         symbol: str,
         direction: Direction,
         reasons: list[str],
-    ) -> None:
+        *,
+        reply_to_message_id: int | None = None,
+    ) -> int:
         """Send a Level 2 high-risk informational warning for an active trade."""
-        self.send_message(
-            build_high_risk_update_message(symbol, direction, reasons)
+        return self.send_message(
+            build_high_risk_update_message(symbol, direction, reasons),
+            reply_to_message_id=reply_to_message_id,
         )
 
     def send_agent_result(self, agent_name: str, result: AgentResult) -> None:

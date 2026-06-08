@@ -6,7 +6,12 @@ from typing import Callable, TYPE_CHECKING
 
 from agents.base import AgentResult, Direction
 from signal_generator import TradeSignal, align_trade_signal_direction, resolve_signal_direction
-from strategy.trade_update import LEVEL2_STANDARD_CONFIRMATION_CYCLES, TradeUpdateChecker, WarningLevel
+from strategy.trade_update import (
+    LEVEL2_STANDARD_CONFIRMATION_CYCLES,
+    TradeUpdateChecker,
+    WarningLevel,
+    assess_trend_opposes_trade,
+)
 from tracking.console import safe_print
 from tracking.signal_csv import SignalCsvRow, SignalCsvStore
 from tracking.trade_history import TradeHistoryStore, TradeRecord, TradeStatisticsCalculator, utc_now_iso
@@ -16,6 +21,9 @@ if TYPE_CHECKING:
 
 PriceFetcher = Callable[[str], float]
 ContextFetcher = Callable[[str, str], dict]
+
+TREND_WARNING_INTERVAL_SECONDS = 300.0
+DEFAULT_LOT_SIZE = 0.01
 
 
 @dataclass
@@ -34,9 +42,19 @@ class ActiveTrade:
     agents_agreement: str = "No"
     timeframe: str = ""
     entry_agent_results: dict[str, AgentResult] | None = None
+    entry_trend_direction: Direction | None = None
+    telegram_message_id: int | None = None
+    lot_size: float = DEFAULT_LOT_SIZE
     level1_warning_sent: bool = False
     level2_warning_sent: bool = False
     level2_streak: int = 0
+    trend_warning_sent: bool = False
+    last_trend_check_monotonic: float = 0.0
+    tp1_reply_sent: bool = False
+    tp2_reply_sent: bool = False
+    tp3_reply_sent: bool = False
+    sl_reply_sent: bool = False
+    sl_proximity_warning_sent: bool = False
     tp1_hit: bool = False
     tp2_hit: bool = False
     tp3_hit: bool = False
@@ -54,9 +72,15 @@ class ActiveTrade:
         agents_agreement: str = "No",
         timeframe: str = "",
         entry_agent_results: dict[str, AgentResult] | None = None,
+        telegram_message_id: int | None = None,
+        lot_size: float | None = None,
     ) -> ActiveTrade:
         aligned_signal = align_trade_signal_direction(signal)
         direction = resolve_signal_direction(aligned_signal)
+        entry_trend = None
+        if entry_agent_results and "trend_filter" in entry_agent_results:
+            entry_trend = entry_agent_results["trend_filter"].direction
+
         return cls(
             symbol=symbol,
             direction=direction,
@@ -72,6 +96,9 @@ class ActiveTrade:
             agents_agreement=agents_agreement,
             timeframe=timeframe,
             entry_agent_results=entry_agent_results,
+            entry_trend_direction=entry_trend,
+            telegram_message_id=telegram_message_id,
+            lot_size=aligned_signal.lot_size if lot_size is None else lot_size,
         )
 
     def profit_loss_r(self) -> float:
@@ -134,7 +161,19 @@ class TradeMonitor:
             if context_fetcher is not None
             else None
         )
-        self.active_trades: list[ActiveTrade] = []
+        from tracking.active_trades_store import ActiveTradesStore
+
+        self.active_trades_store = ActiveTradesStore()
+        self.active_trades = self.active_trades_store.load()
+
+    def register_trade(self, trade: ActiveTrade) -> ActiveTrade:
+        if trade not in self.active_trades:
+            self.active_trades.append(trade)
+        self._persist_active_trades()
+        return trade
+
+    def _persist_active_trades(self) -> None:
+        self.active_trades_store.save(self.active_trades)
 
     def track(
         self,
@@ -143,7 +182,7 @@ class TradeMonitor:
         max_polls: int | None = None,
     ) -> ActiveTrade:
         """Start monitoring an active trade until it closes."""
-        self.active_trades.append(trade)
+        self.register_trade(trade)
         return self.monitor(trade, poll_interval=poll_interval, max_polls=max_polls)
 
     def monitor(
@@ -165,7 +204,11 @@ class TradeMonitor:
                 continue
 
             price = self.price_fetcher(trade.symbol)
-            self._evaluate_price(trade, price)
+            self._check_sl_proximity(trade, price)
+            if not trade.closed:
+                self._evaluate_price(trade, price)
+            if not trade.closed:
+                self._check_trend_warning(trade, price)
             if not trade.closed:
                 self._check_trade_update(trade)
 
@@ -174,6 +217,9 @@ class TradeMonitor:
                 closed_trades.append(trade)
                 if trade in self.active_trades:
                     self.active_trades.remove(trade)
+                self._persist_active_trades()
+            else:
+                self._persist_active_trades()
 
         return closed_trades
 
@@ -210,6 +256,50 @@ class TradeMonitor:
             time.sleep(poll_interval)
 
         return targets
+
+    def _check_sl_proximity(self, trade: ActiveTrade, price: float) -> None:
+        if trade.sl_proximity_warning_sent or trade.closed:
+            return
+
+        original_risk = abs(trade.entry - trade.initial_stop_loss)
+        if original_risk == 0:
+            return
+
+        if trade.direction == Direction.LONG:
+            distance_to_sl = price - trade.stop_loss
+        else:
+            distance_to_sl = trade.stop_loss - price
+
+        if distance_to_sl <= 0 or distance_to_sl > 0.30 * original_risk:
+            return
+
+        from tracking.trade_pnl import distance_to_sl_pips
+
+        remaining_pips = distance_to_sl_pips(
+            symbol=trade.symbol,
+            direction=trade.direction.value,
+            current_price=price,
+            stop_loss=trade.stop_loss,
+        )
+        trade.sl_proximity_warning_sent = True
+        self._notify_sl_proximity(trade, price, remaining_pips)
+        self._persist_active_trades()
+
+    def _notify_sl_proximity(
+        self,
+        trade: ActiveTrade,
+        price: float,
+        remaining_pips: float,
+    ) -> None:
+        from telegram.message_format import format_sl_proximity_warning
+
+        message = format_sl_proximity_warning(
+            current_price=price,
+            remaining_pips=remaining_pips,
+        )
+        safe_print()
+        safe_print(message)
+        self._send_sl_proximity_warning(trade, price, remaining_pips)
 
     def _check_trade_update(self, trade: ActiveTrade) -> None:
         if self.trade_update_checker is None:
@@ -250,6 +340,48 @@ class TradeMonitor:
 
         trade.level1_warning_sent = True
         self._notify_trade_update_level1(trade, list(assessment.reasons))
+        self._persist_active_trades()
+
+    def _check_trend_warning(self, trade: ActiveTrade, price: float) -> None:
+        if trade.trend_warning_sent or self.context_fetcher is None:
+            return
+
+        now = time.monotonic()
+        if (
+            trade.last_trend_check_monotonic
+            and now - trade.last_trend_check_monotonic < TREND_WARNING_INTERVAL_SECONDS
+        ):
+            return
+
+        trade.last_trend_check_monotonic = now
+
+        try:
+            context = self.context_fetcher(trade.symbol, trade.timeframe)
+            from strategy.runner import run_agents
+
+            current_results = run_agents(context)
+        except Exception as exc:
+            safe_print(f"Trend warning check failed for {trade.symbol}: {exc}")
+            return
+
+        if not assess_trend_opposes_trade(trade.direction, current_results):
+            return
+
+        trade.trend_warning_sent = True
+        self._notify_trend_warning(trade, price)
+        self._persist_active_trades()
+
+    def _notify_trend_warning(self, trade: ActiveTrade, price: float) -> None:
+        from telegram.message_format import format_trend_change_warning
+
+        message = format_trend_change_warning(
+            open_time=trade.open_time,
+            direction=trade.direction,
+            current_price=price,
+        )
+        safe_print()
+        safe_print(message)
+        self._send_trend_warning(trade, price)
 
     def _notify_trade_update_level1(self, trade: ActiveTrade, reasons: list[str]) -> None:
         from telegram.message_format import format_trade_update_warning
@@ -344,10 +476,75 @@ class TradeMonitor:
         if self.telegram_bot is None:
             return
 
+        reply_to = trade.telegram_message_id
         try:
-            self.telegram_bot.send_trade_update(trade.symbol, trade.direction, event)
+            if event == "stop_loss":
+                if trade.sl_reply_sent:
+                    return
+                self.telegram_bot.send_stop_loss_reply(
+                    trade,
+                    reply_to_message_id=reply_to,
+                )
+                trade.sl_reply_sent = True
+                return
+
+            tp_map = {
+                "tp1": (1, trade.tp1, "tp1_reply_sent"),
+                "tp2": (2, trade.tp2, "tp2_reply_sent"),
+                "tp3": (3, trade.tp3, "tp3_reply_sent"),
+            }
+            if event not in tp_map:
+                return
+
+            level, tp_price, sent_flag = tp_map[event]
+            if getattr(trade, sent_flag):
+                return
+
+            self.telegram_bot.send_take_profit_reply(
+                trade,
+                tp_level=level,
+                tp_price=tp_price,
+                reply_to_message_id=reply_to,
+            )
+            setattr(trade, sent_flag, True)
         except Exception as exc:
             safe_print(f"Telegram update failed: {exc}")
+
+    def _send_trend_warning(
+        self,
+        trade: ActiveTrade,
+        price: float,
+    ) -> None:
+        if self.telegram_bot is None:
+            return
+
+        try:
+            self.telegram_bot.send_trend_change_warning(
+                reply_to_message_id=trade.telegram_message_id,
+                open_time=trade.open_time,
+                direction=trade.direction,
+                current_price=price,
+            )
+        except Exception as exc:
+            safe_print(f"Telegram trend warning failed: {exc}")
+
+    def _send_sl_proximity_warning(
+        self,
+        trade: ActiveTrade,
+        price: float,
+        remaining_pips: float,
+    ) -> None:
+        if self.telegram_bot is None:
+            return
+
+        try:
+            self.telegram_bot.send_sl_proximity_warning(
+                reply_to_message_id=trade.telegram_message_id,
+                current_price=price,
+                remaining_pips=remaining_pips,
+            )
+        except Exception as exc:
+            safe_print(f"Telegram SL proximity warning failed: {exc}")
 
     def _send_trade_update_level1(self, trade: ActiveTrade, reasons: list[str]) -> None:
         if self.telegram_bot is None:

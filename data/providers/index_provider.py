@@ -86,6 +86,7 @@ class IndexProvider(BaseDataProvider):
 
             candles.append(
                 {
+                    "open_time": float(result["timestamp"][index]) * 1000,
                     "open": float(open_price),
                     "high": float(high_price),
                     "low": float(low_price),

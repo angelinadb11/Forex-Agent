@@ -93,7 +93,7 @@ def compute_final_decision(
         confidence = apply_confidence_cap(results, Direction.SHORT, short_score)
         return Direction.SHORT, confidence, long_score, short_score
 
-    return Direction.NEUTRAL, long_score, long_score, short_score
+    return Direction.NEUTRAL, 0.0, long_score, short_score
 
 
 def build_signal_reason(results: dict[str, AgentResult], direction: Direction) -> str:

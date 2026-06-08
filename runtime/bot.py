@@ -1,0 +1,206 @@
+from __future__ import annotations
+
+import logging
+import time
+from typing import Callable
+
+from agents.base import AgentResult
+from config.symbols import resolve_symbol
+from data import MarketDataProvider
+from runtime.dedup import SignalDedupGate
+from signal_generator import SignalGenerator, TradeSignal
+from strategy import format_agents_agreement
+from strategy.signal_filter import FilterResult, SignalFilter
+from tracking.trade_monitor import ActiveTrade, TradeMonitor
+from tracking.console import safe_print
+
+AnalyzeSymbolFn = Callable[..., tuple[TradeSignal | None, dict[str, AgentResult] | None, FilterResult | None]]
+
+
+class BotRuntime:
+    """Continuous or one-shot orchestration for scanning and trade monitoring."""
+
+    def __init__(
+        self,
+        *,
+        symbols: tuple[str, ...],
+        timeframe: str,
+        logger: logging.Logger,
+        provider: MarketDataProvider,
+        signal_filter: SignalFilter,
+        signal_generator: SignalGenerator,
+        monitor: TradeMonitor,
+        dedup: SignalDedupGate,
+        analyze_symbol: AnalyzeSymbolFn,
+        candle_limit: int,
+        poll_interval_seconds: float = 60.0,
+        scan_interval_seconds: float = 900.0,
+        publish_signal: Callable[..., ActiveTrade] | None = None,
+        loop_sleep_seconds: float = 1.0,
+    ) -> None:
+        self.symbols = symbols
+        self.timeframe = timeframe
+        self.logger = logger
+        self.provider = provider
+        self.signal_filter = signal_filter
+        self.signal_generator = signal_generator
+        self.monitor = monitor
+        self.dedup = dedup
+        self.analyze_symbol = analyze_symbol
+        self.candle_limit = candle_limit
+        self.poll_interval_seconds = poll_interval_seconds
+        self.scan_interval_seconds = scan_interval_seconds
+        self.publish_signal_fn = publish_signal
+        self.loop_sleep_seconds = loop_sleep_seconds
+
+    def run_forever(self) -> None:
+        self.logger.info(
+            "Continuous mode started | symbols=%s | poll=%.0fs | scan=%.0fs",
+            ", ".join(self.symbols),
+            self.poll_interval_seconds,
+            self.scan_interval_seconds,
+        )
+        safe_print()
+        safe_print("=== CONTINUOUS MODE ===")
+        safe_print(f"Symbols: {', '.join(self.symbols)}")
+        safe_print(f"Poll interval: {self.poll_interval_seconds:.0f}s")
+        safe_print(f"Scan interval: {self.scan_interval_seconds:.0f}s")
+        safe_print("Press Ctrl+C to stop.")
+        safe_print()
+
+        self._scan_all_symbols()
+        last_poll = 0.0
+        last_scan = time.monotonic()
+
+        try:
+            while True:
+                now = time.monotonic()
+
+                if now - last_poll >= self.poll_interval_seconds:
+                    self._tick_monitors()
+                    last_poll = now
+
+                if now - last_scan >= self.scan_interval_seconds:
+                    self._scan_all_symbols()
+                    last_scan = now
+
+                time.sleep(self.loop_sleep_seconds)
+        except KeyboardInterrupt:
+            self.logger.info("Continuous mode stopped by user")
+            safe_print()
+            safe_print("Continuous mode stopped.")
+
+    def run_once(self, *, max_polls: int | None = None) -> None:
+        self.logger.info("Single-pass mode | symbols=%s", ", ".join(self.symbols))
+        self._scan_all_symbols()
+
+        open_trades = self._open_trades()
+        if not open_trades:
+            self.logger.info("No active trades to monitor")
+            return
+
+        safe_print()
+        safe_print("=== TRADE MONITOR STARTED ===")
+        for trade in open_trades:
+            safe_print(f"Monitoring {trade.symbol} {trade.direction.value.upper()} trade...")
+
+        polls = 0
+        while self._open_trades():
+            self._tick_monitors()
+            polls += 1
+            if max_polls is not None and polls >= max_polls:
+                safe_print()
+                safe_print("Monitoring stopped (max polls reached). Open trades remain active.")
+                break
+            time.sleep(self.poll_interval_seconds)
+
+        self.logger.info("Single-pass monitoring completed")
+
+    def _open_symbols(self) -> set[str]:
+        return {
+            resolve_symbol(trade.symbol).display
+            for trade in self._open_trades()
+        }
+
+    def _open_trades(self) -> list[ActiveTrade]:
+        return [trade for trade in self.monitor.active_trades if not trade.closed]
+
+    def _tick_monitors(self) -> None:
+        closed_trades = self.monitor.tick_all()
+        for trade in closed_trades:
+            self.logger.info(
+                "Trade closed | %s | %s | result=%s",
+                trade.symbol,
+                trade.direction.value,
+                trade.result,
+            )
+
+    def _scan_all_symbols(self) -> None:
+        open_symbols = self._open_symbols()
+        for symbol in self.symbols:
+            display_symbol = resolve_symbol(symbol).display
+            if display_symbol in open_symbols:
+                self.logger.debug(
+                    "Skipping scan for %s: open trade already active",
+                    display_symbol,
+                )
+                continue
+
+            signal, results, filter_result = self.analyze_symbol(
+                symbol,
+                provider=self.provider,
+                timeframe=self.timeframe,
+                candle_limit=self.candle_limit,
+                signal_filter=self.signal_filter,
+                signal_generator=self.signal_generator,
+                logger=self.logger,
+            )
+            if signal is None or results is None or filter_result is None:
+                continue
+
+            decision = self.dedup.can_publish(symbol, signal, self._open_symbols())
+            if not decision.allowed:
+                self.logger.info(
+                    "Signal skipped for %s: %s",
+                    display_symbol,
+                    decision.reason,
+                )
+                continue
+
+            self._publish_trade(
+                symbol,
+                signal,
+                results=results,
+                filter_result=filter_result,
+            )
+            self.dedup.record_published(symbol, signal)
+            self.logger.info("Signal published for %s", display_symbol)
+
+    def _publish_trade(
+        self,
+        symbol: str,
+        signal: TradeSignal,
+        *,
+        results: dict[str, AgentResult],
+        filter_result: FilterResult,
+    ) -> ActiveTrade:
+        agents_agreement = format_agents_agreement(results, filter_result.direction)
+        if self.publish_signal_fn is not None:
+            return self.publish_signal_fn(
+                symbol,
+                signal,
+                timeframe=self.timeframe,
+                agent_results=results,
+                agents_agreement=agents_agreement,
+                news_warning=filter_result.news_warning,
+            )
+
+        trade = ActiveTrade.from_signal(
+            symbol,
+            signal,
+            agents_agreement=agents_agreement,
+            timeframe=self.timeframe,
+            entry_agent_results=results,
+        )
+        self.monitor.active_trades.append(trade)
+        return trade

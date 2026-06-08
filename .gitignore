@@ -1,0 +1,9 @@
+logs/*.log
+trade_history.json
+signals.csv
+backtest_results.json
+__pycache__/
+*.py[cod]
+.env
+.venv/
+venv/

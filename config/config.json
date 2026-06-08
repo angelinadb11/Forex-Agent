@@ -1,0 +1,21 @@
+{
+  "symbol": "BTCUSDT",
+  "symbols": ["BTCUSDT", "XAUUSD", "DJ30"],
+  "timeframe": "15m",
+  "candle_limit": 500,
+  "london_ny_session_symbols": [],
+  "session_confidence_symbols": [],
+  "news": {
+    "enabled": true,
+    "buffer_minutes": 15
+  },
+  "runtime": {
+    "mode": "continuous",
+    "poll_interval_seconds": 60,
+    "scan_interval_seconds": 900,
+    "signal_cooldown_minutes": 60,
+    "duplicate_entry_tolerance_pct": 0.001
+  },
+  "_supported_symbols": ["BTCUSDT", "XAUUSD", "DJ30"],
+  "_supported_timeframes": ["1m", "5m", "15m"]
+}

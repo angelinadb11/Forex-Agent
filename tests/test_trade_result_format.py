@@ -9,28 +9,28 @@ class TradeResultFormatTests(unittest.TestCase):
         message = format_trade_result("BTCUSDT", Direction.LONG, "tp1")
         self.assertEqual(
             message,
-            "TP1:\n✅ TP1 HIT\n\nBTCUSDT LONG",
+            "ТП1:\n✅ ТП1 ДОСЯГНУТО\n\nBTCUSDT ЛОНГ",
         )
 
     def test_tp2_format(self):
         message = format_trade_result("BTCUSDT", Direction.SHORT, "tp2")
         self.assertEqual(
             message,
-            "TP2:\n✅✅ TP2 HIT\n\nBTCUSDT SHORT",
+            "ТП2:\n✅✅ ТП2 ДОСЯГНУТО\n\nBTCUSDT ШОРТ",
         )
 
     def test_tp3_format(self):
         message = format_trade_result("BTCUSDT", Direction.LONG, "tp3")
         self.assertEqual(
             message,
-            "TP3:\n✅✅✅ TP3 HIT 🔥\n\nBTCUSDT LONG",
+            "ТП3:\n✅✅✅ ТП3 ДОСЯГНУТО 🔥\n\nBTCUSDT ЛОНГ",
         )
 
     def test_stop_loss_format(self):
         message = format_trade_result("BTCUSDT", Direction.LONG, "stop_loss")
         self.assertEqual(
             message,
-            "Stop loss:\n🔴 STOP LOSS HIT\n\nBTCUSDT LONG",
+            "Стоп:\n🔴 СТОП-ЛОСС\n\nBTCUSDT ЛОНГ",
         )
 
     def test_breakeven_reply_format(self):
@@ -41,10 +41,10 @@ class TradeResultFormatTests(unittest.TestCase):
             entry=2650.00,
             exit_price=2650.00,
         )
-        self.assertIn("⚪ Вийшли на беззбитку", message)
-        self.assertIn("LONG 2650.00", message)
-        self.assertIn("Закрито на точці входу: 2650.00", message)
-        self.assertIn("0R — без збитку", message)
+        self.assertIn("⚪ Закрили в BE", message)
+        self.assertIn("ЛОНГ 2650.00", message)
+        self.assertIn("Ціна закриття: 2650.00", message)
+        self.assertIn("0R 👌", message)
 
 
 if __name__ == "__main__":

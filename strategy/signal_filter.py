@@ -232,7 +232,7 @@ class SignalFilter:
             and symbol_key in self.london_ny_session_symbols
             and not is_london_or_new_york_session(timestamp)
         ):
-            off_hours_warning = "⚠️ Off-hours"
+            off_hours_warning = "⚠️ Поза сесією"
 
         if final_direction == Direction.NEUTRAL:
             return FilterResult(
@@ -277,7 +277,7 @@ class SignalFilter:
             )
             if h4_block is not None:
                 if self.h4_soft_mode:
-                    h4_mismatch_warning = "⚠️ H4 mismatch"
+                    h4_mismatch_warning = "⚠️ H4 не збігається"
                 else:
                     return FilterResult(
                         approved=False,

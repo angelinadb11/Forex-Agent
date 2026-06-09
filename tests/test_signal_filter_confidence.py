@@ -213,7 +213,7 @@ class SignalFilterSessionConfigTests(unittest.TestCase):
         )
 
         self.assertTrue(filter_result.approved)
-        self.assertEqual(filter_result.off_hours_warning, "⚠️ Off-hours")
+        self.assertEqual(filter_result.off_hours_warning, "⚠️ Поза сесією")
 
 
 class ConsensusDecisionTests(unittest.TestCase):

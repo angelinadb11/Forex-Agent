@@ -1,0 +1,17 @@
+[Unit]
+Description=Forex Agent trading bot (24/7)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=forex
+Group=forex
+WorkingDirectory=/opt/forex-agent
+EnvironmentFile=/opt/forex-agent/.env
+ExecStart=/opt/forex-agent/.venv/bin/python main.py
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

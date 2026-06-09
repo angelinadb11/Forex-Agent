@@ -38,16 +38,16 @@ class MessageFormatTests(unittest.TestCase):
         self.assertEqual(
             message.splitlines()[:10],
             [
-                "BTCUSDT LONG",
+                "BTCUSDT ЛОНГ",
                 "",
-                "Entry: 100.00",
-                "SL: 90.00",
+                "Вхід: 100.00",
+                "Стоп: 90.00",
                 "",
-                "✅ TP1: 110.00",
-                "✅ TP2: 120.00",
-                "✅ TP3: 130.00",
+                "✅ ТП1: 110.00",
+                "✅ ТП2: 120.00",
+                "✅ ТП3: 130.00",
                 "",
-                "TF: 15m",
+                "ТФ: 15 хв",
             ],
         )
         self.assertGreaterEqual(len(analysis_lines), 1)
@@ -55,7 +55,7 @@ class MessageFormatTests(unittest.TestCase):
         self.assertNotIn("Confidence", message)
         self.assertNotIn("Analysis:", message)
         self.assertNotIn("•", message)
-        self.assertIn("TF: 15m", message)
+        self.assertIn("ТФ: 15 хв", message)
         self.assertTrue(all(line in BULLISH_ANALYSIS_PHRASES for line in analysis_lines))
 
     def test_analysis_phrases_are_randomized_from_pool(self):

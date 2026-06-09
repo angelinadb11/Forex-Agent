@@ -6,11 +6,14 @@ from typing import Callable, TYPE_CHECKING
 
 from agents.base import AgentResult, Direction
 from signal_generator import TradeSignal, align_trade_signal_direction, resolve_signal_direction
+from strategy.near_tp1_breakeven import NearTp1BreakevenChecker, favorable_progress_r
 from strategy.structure_weakness import (
     StructureWeaknessChecker,
     enrich_trade_entry_context,
+    resolve_entry_rsi,
+    resolve_entry_zone,
 )
-from strategy.trend_breakeven_alert import TrendBreakevenAlertChecker
+from strategy.trend_breakeven_alert import TrendBreakevenAlertChecker, sl_at_or_better_than_breakeven
 from tracking.console import safe_print
 from tracking.level_checks import stop_loss_hit, take_profit_hit
 from tracking.profit_milestones import pending_profit_milestone_messages
@@ -18,6 +21,7 @@ from tracking.signal_csv import SignalCsvRow, SignalCsvStore
 from tracking.trade_history import TradeHistoryStore, TradeRecord, TradeStatisticsCalculator, utc_now_iso
 
 if TYPE_CHECKING:
+    from runtime.m15_reversal_block import M15ReversalBlockGate
     from telegram.telegram_bot import TelegramBot
 
 PriceFetcher = Callable[[str], float]
@@ -60,6 +64,10 @@ class ActiveTrade:
     trend_warning_sent: bool = False
     last_trend_check_monotonic: float = 0.0
     last_trend_candle_open_time: float | None = None
+    near_tp1_warning_sent: bool = False
+    last_near_tp1_check_monotonic: float = 0.0
+    last_near_tp1_candle_open_time: float | None = None
+    peak_progress_r: float = 0.0
     tp1_reply_sent: bool = False
     tp2_reply_sent: bool = False
     tp3_reply_sent: bool = False
@@ -160,6 +168,8 @@ class TradeMonitor:
         context_fetcher: ContextFetcher | None = None,
         structure_weakness_checker: StructureWeaknessChecker | None = None,
         trend_breakeven_checker: TrendBreakevenAlertChecker | None = None,
+        near_tp1_breakeven_checker: NearTp1BreakevenChecker | None = None,
+        m15_reversal_block: M15ReversalBlockGate | None = None,
         candle_fetcher: CandleFetcher | None = None,
     ) -> None:
         self.price_fetcher = price_fetcher
@@ -183,6 +193,14 @@ class TradeMonitor:
             if context_fetcher is not None
             else None
         )
+        self.near_tp1_breakeven_checker = (
+            near_tp1_breakeven_checker
+            if near_tp1_breakeven_checker is not None
+            else NearTp1BreakevenChecker(context_fetcher)
+            if context_fetcher is not None
+            else None
+        )
+        self.m15_reversal_block = m15_reversal_block
         from tracking.active_trades_store import ActiveTradesStore
 
         self.active_trades_store = ActiveTradesStore()
@@ -248,8 +266,11 @@ class TradeMonitor:
             price = candle.get("close", (high + low) / 2)
 
             self._check_sl_proximity(trade, price)
+            self._update_peak_progress(trade, high, low)
             if not trade.closed:
                 self._check_trend_breakeven_alert(trade, price)
+            if not trade.closed:
+                self._check_near_tp1_breakeven_alert(trade, price)
             if not trade.closed:
                 self._check_profit_milestones(trade, high, low)
             if not trade.closed:
@@ -410,6 +431,77 @@ class TradeMonitor:
             )
         except Exception as exc:
             safe_print(f"Telegram profit milestone failed: {exc}")
+
+    def _update_peak_progress(self, trade: ActiveTrade, high: float, low: float) -> None:
+        if trade.closed or trade.tp1_hit:
+            return
+        risk = abs(trade.entry - trade.initial_stop_loss)
+        progress = favorable_progress_r(
+            trade.direction,
+            entry=trade.entry,
+            risk=risk,
+            high=high,
+            low=low,
+        )
+        if progress > trade.peak_progress_r:
+            trade.peak_progress_r = progress
+
+    def _check_near_tp1_breakeven_alert(self, trade: ActiveTrade, price: float) -> None:
+        if self.near_tp1_breakeven_checker is None:
+            return
+
+        try:
+            assessment = self.near_tp1_breakeven_checker.analyze(
+                trade,
+                now_monotonic=time.monotonic(),
+            )
+        except Exception as exc:
+            safe_print(f"Near-TP1 breakeven check failed for {trade.symbol}: {exc}")
+            return
+
+        if assessment is None or not assessment.should_move_sl_to_entry:
+            return
+
+        trade.near_tp1_warning_sent = True
+        if self.m15_reversal_block is not None:
+            self.m15_reversal_block.register_from_trade(trade)
+        self._notify_near_tp1_breakeven_alert(trade, price, assessment.met_conditions)
+        self._persist_active_trades()
+
+    def _notify_near_tp1_breakeven_alert(
+        self,
+        trade: ActiveTrade,
+        price: float,
+        conditions: tuple[str, ...],
+    ) -> None:
+        safe_print()
+        safe_print(
+            f"Near-TP1 reversal for {trade.symbol} at {trade.peak_progress_r:.2f}R "
+            f"— move SL to entry ({trade.entry:.2f})"
+        )
+        self._send_near_tp1_breakeven_alert(trade, price, conditions)
+
+    def _send_near_tp1_breakeven_alert(
+        self,
+        trade: ActiveTrade,
+        price: float,
+        conditions: tuple[str, ...],
+    ) -> None:
+        if self.telegram_bot is None:
+            return
+
+        try:
+            self.telegram_bot.send_near_tp1_breakeven_warning(
+                reply_to_message_id=trade.telegram_message_id,
+                open_time=trade.open_time,
+                direction=trade.direction,
+                current_price=price,
+                entry=trade.entry,
+                peak_progress_r=trade.peak_progress_r,
+                conditions=conditions,
+            )
+        except Exception as exc:
+            safe_print(f"Telegram near-TP1 breakeven alert failed: {exc}")
 
     def _check_trend_breakeven_alert(self, trade: ActiveTrade, price: float) -> None:
         if self.trend_breakeven_checker is None:
@@ -602,6 +694,10 @@ class TradeMonitor:
         trade.closed = True
         trade.result = result
         trade.close_time = utc_now_iso()
+        if self.m15_reversal_block is not None and (
+            trade.near_tp1_warning_sent or (result == "breakeven" and not trade.tp1_hit)
+        ):
+            self.m15_reversal_block.register_from_trade(trade)
         self._notify(trade, result)
 
     def _send_telegram(self, trade: ActiveTrade, event: str) -> None:

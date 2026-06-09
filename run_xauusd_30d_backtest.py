@@ -10,6 +10,7 @@ from agents.base import Direction
 from agents.zone_helpers import ZoneCatalog
 from backtest.engine import BacktestConfig, BacktestEngine, candle_timestamp
 from backtest.progress import BacktestScanProgress
+from backtest.m15_reversal_block import BacktestM15ReversalBlock
 from backtest.simulator import SimulatedTradeResult, TradeManagementMode, TradeSimulator
 from config.sl_config import get_sl_config
 from data import MarketDataProvider
@@ -55,6 +56,7 @@ class BacktestRunStats:
     h1_candles: int = 0
     period_start: str = ""
     period_end: str = ""
+    m15_reversal_blocked: int = 0
 
     @property
     def total_signals(self) -> int:
@@ -140,7 +142,9 @@ class BacktestRunStats:
 
     @property
     def stop_losses(self) -> int:
-        return sum(1 for trade in self.trades if trade.result == "stop_loss")
+        from tracking.trade_outcome import is_full_stop_loss
+
+        return sum(1 for trade in self.trades if is_full_stop_loss(trade))
 
     @property
     def breakeven_exits(self) -> int:
@@ -343,14 +347,27 @@ class LocalDataBacktestEngine(BacktestEngine):
         setups: list[TradeSetup],
         candles: list[Candle],
         management_mode: TradeManagementMode,
+        *,
+        enable_m15_reversal_block: bool = False,
     ) -> BacktestRunStats:
         stats = BacktestRunStats()
         open_until_index = -1
         simulator = TradeSimulator()
+        use_near_tp1_be = management_mode == TradeManagementMode.PARTIAL_NEAR_TP1_BE
+        block = BacktestM15ReversalBlock() if enable_m15_reversal_block else None
 
         for setup in setups:
             index = setup.entry_index
             if index <= open_until_index:
+                continue
+
+            if block is not None and block.blocks_setup(
+                setup.signal,
+                candles,
+                index,
+                symbol=self.symbol_def.display,
+                zone_catalog=self._zone_catalog,
+            ):
                 continue
 
             simulated = simulator.simulate(
@@ -358,12 +375,20 @@ class LocalDataBacktestEngine(BacktestEngine):
                 candles[index + 1 :],
                 entry_index=index,
                 mode=management_mode,
+                all_candles=candles if use_near_tp1_be else None,
+                zone_catalog=self._zone_catalog if use_near_tp1_be else None,
+                symbol=self.symbol_def.display,
             )
             if simulated is None:
                 continue
 
             stats.trades.append(simulated)
             open_until_index = simulated.exit_index
+            if block is not None:
+                block.register_from_trade(simulated)
+
+        if block is not None:
+            stats.m15_reversal_blocked = block.blocked_setups
 
         return stats
 

@@ -87,27 +87,27 @@ def _has_severe_confidence_deterioration(
 
 def _structure_flip_message(trade_direction: Direction) -> str:
     if trade_direction == Direction.LONG:
-        return "Market structure has flipped bearish."
-    return "Market structure has flipped bullish."
+        return "Структура ринку розвернулась ведмежою."
+    return "Структура ринку розвернулась бичачою."
 
 
 def _level1_message(agent_name: str, trade_direction: Direction) -> str:
     if agent_name == "smc":
         return (
-            "Bullish structure is weakening."
+            "Бичача структура слабшає."
             if trade_direction == Direction.LONG
-            else "Bearish structure is weakening."
+            else "Ведмежа структура слабшає."
         )
     if agent_name == "liquidity":
         return (
-            "Liquidity support is fading."
+            "Підтримка ліквідності слабшає."
             if trade_direction == Direction.LONG
-            else "Liquidity pressure is fading."
+            else "Тиск ліквідності слабшає."
         )
     return (
-        "Bullish momentum is weakening."
+        "Бичачий імпульс слабшає."
         if trade_direction == Direction.LONG
-        else "Bearish momentum is weakening."
+        else "Ведмежий імпульс слабшає."
     )
 
 
@@ -134,7 +134,7 @@ def _has_third_level2_confirmation(
 def _build_level2_reasons(trade_direction: Direction) -> tuple[str, ...]:
     return (
         _structure_flip_message(trade_direction),
-        "The original setup is no longer valid.",
+        "Початковий сетап більше не валідний.",
     )
 
 

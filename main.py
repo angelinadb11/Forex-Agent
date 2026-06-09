@@ -18,6 +18,7 @@ from strategy import (
     run_agents,
     SignalFilter,
 )
+from runtime.m15_reversal_block import M15ReversalBlockGate
 from strategy.scalp_mode import ScalpPublishGate, analyze_scalp_symbol
 from strategy.signal_filter import MIN_CONFIDENCE, MIN_CONFIDENCE_PCT
 from tracking import TradeMonitor, print_trade_signal
@@ -263,6 +264,7 @@ def build_bot_runtime(
         tf,
         limit=settings.candle_limit,
     )
+    m15_reversal_block = M15ReversalBlockGate(context_fetcher=context_fetcher)
 
     trade_manager = (
         TelegramTradeManager(
@@ -271,6 +273,7 @@ def build_bot_runtime(
             telegram_bot=telegram_bot,
             poll_interval=poll_interval,
             context_fetcher=context_fetcher,
+            m15_reversal_block=m15_reversal_block,
         )
         if telegram_bot is not None
         else None
@@ -284,6 +287,7 @@ def build_bot_runtime(
             candle_fetcher=lambda symbol, tf: provider.get_market_data(symbol, tf, limit=1)[-1],
             telegram_bot=None,
             context_fetcher=context_fetcher,
+            m15_reversal_block=m15_reversal_block,
         )
 
     dedup = SignalDedupGate(
@@ -291,6 +295,7 @@ def build_bot_runtime(
         signal_cooldown_minutes=settings.signal_cooldown_minutes,
     )
     dedup.seed_from_active_trades(monitor.active_trades)
+    m15_reversal_block.seed_from_active_trades(monitor.active_trades)
 
     publish_signal = trade_manager.publish_signal if trade_manager is not None else None
     publish_scalp_signal = (
@@ -316,6 +321,7 @@ def build_bot_runtime(
         signal_generator=signal_generator,
         monitor=monitor,
         dedup=dedup,
+        m15_reversal_block=m15_reversal_block,
         analyze_symbol=analyze_symbol,
         candle_limit=settings.candle_limit,
         poll_interval_seconds=poll_interval,

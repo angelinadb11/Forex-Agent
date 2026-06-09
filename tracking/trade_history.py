@@ -10,6 +10,7 @@ from agents.base import AgentResult
 from config.settings import PROJECT_ROOT
 from tracking.active_trades_store import _deserialize_agent_results, _serialize_agent_results
 from tracking.console import safe_print
+from tracking.trade_outcome import is_full_stop_loss_record
 
 TRADE_HISTORY_FILE = PROJECT_ROOT / "trade_history.json"
 
@@ -114,7 +115,9 @@ class TradeStatisticsCalculator:
         tp2_hits = sum(1 for trade in closed if trade.tp2_hit)
         tp3_hits = sum(1 for trade in closed if trade.tp3_hit)
         wins = sum(1 for trade in closed if trade.tp1_hit)
-        stop_losses = sum(1 for trade in closed if trade.result == "stop_loss")
+        stop_losses = sum(
+            1 for trade in closed if is_full_stop_loss_record(trade)
+        )
         breakeven_exits = sum(1 for trade in closed if trade.result == "breakeven")
 
         return TradeStatistics(

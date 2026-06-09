@@ -28,6 +28,7 @@ class TelegramTradeManager:
         history_store: TradeHistoryStore | None = None,
         context_fetcher: ContextFetcher | None = None,
         candle_fetcher: CandleFetcher | None = None,
+        m15_reversal_block=None,
     ) -> None:
         from telegram.telegram_bot import TelegramBot as Bot
 
@@ -43,6 +44,7 @@ class TelegramTradeManager:
             stats_calculator=self.stats_calculator,
             telegram_bot=self.telegram_bot,
             context_fetcher=context_fetcher,
+            m15_reversal_block=m15_reversal_block,
         )
         self.active_trades: list[ActiveTrade] = []
 

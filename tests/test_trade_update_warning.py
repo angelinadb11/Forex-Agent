@@ -23,19 +23,19 @@ class TradeUpdateWarningTests(unittest.TestCase):
         message = format_trade_update_warning(
             "XAUUSD",
             Direction.LONG,
-            ["Bullish momentum is weakening."],
+            ["Бичачий імпульс слабшає."],
         )
         self.assertEqual(
             message,
             "\n".join(
                 [
-                    "⚠️ TRADE UPDATE",
+                    "⚠️ ОНОВЛЕННЯ ПОЗИЦІЇ",
                     "",
-                    "XAUUSD LONG",
+                    "XAUUSD ЛОНГ",
                     "",
-                    "Bullish momentum is weakening.",
+                    "Бичачий імпульс слабшає.",
                     "",
-                    "Monitor position closely.",
+                    "Стеж за позицією уважно.",
                 ]
             ),
         )
@@ -45,14 +45,14 @@ class TradeUpdateWarningTests(unittest.TestCase):
             "XAUUSD",
             Direction.LONG,
             [
-                "Market structure has flipped bearish.",
-                "The original setup is no longer valid.",
+                "Структура ринку розвернулась ведмежою.",
+                "Початковий сетап більше не валідний.",
             ],
         )
-        self.assertIn("⚠️ HIGH RISK UPDATE", message)
-        self.assertIn("Market structure has flipped bearish.", message)
-        self.assertIn("The original setup is no longer valid.", message)
-        self.assertIn("Consider closing the position manually.", message)
+        self.assertIn("⚠️ ВИСОКИЙ РИЗИК", message)
+        self.assertIn("Структура ринку розвернулась ведмежою.", message)
+        self.assertIn("Початковий сетап більше не валідний.", message)
+        self.assertIn("Розглянь ручне закриття позиції.", message)
 
     def test_level1_on_soft_smc_weakening(self):
         current = self._entry_results()
@@ -68,7 +68,7 @@ class TradeUpdateWarningTests(unittest.TestCase):
         self.assertEqual(assessment.level, WarningLevel.LEVEL_1)
         self.assertFalse(assessment.level2_instant)
         self.assertFalse(assessment.level2_standard)
-        self.assertEqual(assessment.reasons, ("Bullish structure is weakening.",))
+        self.assertEqual(assessment.reasons, ("Бичача структура слабшає.",))
 
     def test_level1_on_rsi_weakening(self):
         current = self._entry_results()
@@ -82,7 +82,7 @@ class TradeUpdateWarningTests(unittest.TestCase):
         )
 
         self.assertEqual(assessment.level, WarningLevel.LEVEL_1)
-        self.assertEqual(assessment.reasons, ("Bullish momentum is weakening.",))
+        self.assertEqual(assessment.reasons, ("Бичачий імпульс слабшає.",))
 
     def test_dual_opposite_without_third_confirmation_is_standard_only(self):
         current = self._entry_results()
@@ -100,7 +100,7 @@ class TradeUpdateWarningTests(unittest.TestCase):
         self.assertEqual(assessment.level, WarningLevel.NONE)
         self.assertFalse(assessment.level2_instant)
         self.assertTrue(assessment.level2_standard)
-        self.assertIn("Market structure has flipped bearish.", assessment.level2_reasons)
+        self.assertIn("Структура ринку розвернулась ведмежою.", assessment.level2_reasons)
 
     def test_dual_opposite_with_rsi_opposite_is_instant(self):
         current = self._entry_results()

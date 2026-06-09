@@ -20,7 +20,7 @@ from telegram.message_format import (
 )
 
 TELEGRAM_API_URL = "https://api.telegram.org/bot{token}/sendMessage"
-CONNECTION_TEST_MESSAGE = "✅ TradingBoss Bot Connected"
+CONNECTION_TEST_MESSAGE = "✅ TradingBoss бот підключено"
 
 UPDATE_CHAT_KEYS = (
     "message",
@@ -326,10 +326,10 @@ class TelegramBot:
         """Notify that no trade signal was sent."""
         confidence_pct = min(100, int(round(confidence * 100)))
         lines = [
-            "🚫 NO TRADE",
+            "🚫 БЕЗ УГОДИ",
             "",
             symbol,
-            f"Confidence: {confidence_pct}%",
+            f"Впевненість: {confidence_pct}%",
         ]
         if reason:
             lines.append(reason)
@@ -371,6 +371,28 @@ class TelegramBot:
             current_price=current_price,
             entry=entry,
             reason=reason,
+        )
+        return self.send_trade_reply(message, reply_to_message_id=reply_to_message_id)
+
+    def send_near_tp1_breakeven_warning(
+        self,
+        *,
+        reply_to_message_id: int | None,
+        open_time: str,
+        direction: Direction,
+        current_price: float,
+        entry: float,
+        peak_progress_r: float,
+        conditions: tuple[str, ...] = (),
+    ) -> int:
+        from telegram.message_format import format_near_tp1_breakeven_warning
+
+        message = format_near_tp1_breakeven_warning(
+            direction=direction,
+            current_price=current_price,
+            entry=entry,
+            peak_progress_r=peak_progress_r,
+            conditions=conditions,
         )
         return self.send_trade_reply(message, reply_to_message_id=reply_to_message_id)
 

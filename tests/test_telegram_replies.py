@@ -60,7 +60,7 @@ class TelegramReplyFormatTests(unittest.TestCase):
             tp3=2653.00,
         )
         self.assertIn("✅ ТЕЙК-ПРОФІТ 1", message)
-        self.assertIn("LONG", message)
+        self.assertIn("ЛОНГ", message)
         self.assertIn("+10.0 pips", message)
         self.assertIn("2650.00", message)
         self.assertIn("2652.00", message)

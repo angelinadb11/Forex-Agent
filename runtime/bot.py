@@ -10,6 +10,7 @@ from data import MarketDataProvider
 from runtime.dedup import SignalDedupGate
 from signal_generator import SignalGenerator, TradeSignal
 from strategy import format_agents_agreement
+from runtime.m15_reversal_block import M15ReversalBlockGate
 from strategy.signal_filter import FilterResult, SignalFilter
 from tracking.trade_monitor import ActiveTrade, TradeMonitor
 from tracking.console import safe_print
@@ -40,6 +41,7 @@ class BotRuntime:
         signal_generator: SignalGenerator,
         monitor: TradeMonitor,
         dedup: SignalDedupGate,
+        m15_reversal_block: M15ReversalBlockGate | None = None,
         analyze_symbol: AnalyzeSymbolFn,
         candle_limit: int,
         poll_interval_seconds: float = 60.0,
@@ -58,6 +60,7 @@ class BotRuntime:
         self.signal_generator = signal_generator
         self.monitor = monitor
         self.dedup = dedup
+        self.m15_reversal_block = m15_reversal_block
         self.analyze_symbol = analyze_symbol
         self.candle_limit = candle_limit
         self.poll_interval_seconds = poll_interval_seconds
@@ -193,6 +196,20 @@ class BotRuntime:
                 )
                 continue
 
+            if self.m15_reversal_block is not None:
+                block_decision = self.m15_reversal_block.can_publish(
+                    symbol,
+                    signal,
+                    self.timeframe,
+                )
+                if not block_decision.allowed:
+                    self.logger.info(
+                        "Signal skipped for %s: %s",
+                        display_symbol,
+                        block_decision.reason,
+                    )
+                    continue
+
             self._publish_trade(
                 symbol,
                 signal,
@@ -240,6 +257,20 @@ class BotRuntime:
                     decision.reason,
                 )
                 continue
+
+            if self.m15_reversal_block is not None:
+                block_decision = self.m15_reversal_block.can_publish(
+                    symbol,
+                    signal,
+                    SCALP_TIMEFRAME,
+                )
+                if not block_decision.allowed:
+                    self.logger.info(
+                        "Scalp skipped for %s: %s",
+                        display_symbol,
+                        block_decision.reason,
+                    )
+                    continue
 
             agents_agreement = format_agents_agreement(
                 scalp_result.m5_results or {},

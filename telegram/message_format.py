@@ -216,22 +216,32 @@ def format_breakeven_reply(
 
 def format_post_tp_close_reply(
     *,
+    symbol: str,
     direction: Direction,
     entry: float,
     exit_price: float,
-    highest_tp: int,
-    locked_r: float,
+    tp1: float,
+    tp2: float,
+    tp2_hit: bool,
 ) -> str:
     """Remainder stopped out after TP1/TP2 was taken — profit is locked, not BE."""
     direction_label = format_trade_direction_label(direction)
-    return "\n".join(
-        [
-            f"✅ Угоду закрито з прибутком (ТП{highest_tp} взято)",
-            f"└ Сигнал: {direction_label} {entry:.2f}",
-            f"└ Решту позиції закрито: {exit_price:.2f}",
-            f"└ Результат: {locked_r:+.2f}R 🎯",
-        ]
+    highest_tp = 2 if tp2_hit else 1
+    tp1_pips = trade_move_pips(
+        symbol=symbol, direction=direction, entry=entry, price=tp1
     )
+    lines = [
+        f"✅ Угоду закрито з прибутком (ТП{highest_tp} взято)",
+        f"└ Сигнал: {direction_label} {entry:.2f}",
+        f"└ ТП1: +{tp1_pips:.1f} піпсів (50% позиції)",
+    ]
+    if tp2_hit:
+        tp2_pips = trade_move_pips(
+            symbol=symbol, direction=direction, entry=entry, price=tp2
+        )
+        lines.append(f"└ ТП2: +{tp2_pips:.1f} піпсів (25% позиції)")
+    lines.append(f"└ Решту позиції закрито: {exit_price:.2f}")
+    return "\n".join(lines)
 
 
 def format_trade_update(symbol: str, direction: Direction, event: str) -> str:

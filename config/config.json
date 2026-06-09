@@ -3,7 +3,7 @@
   "symbols": ["BTCUSDT", "XAUUSD", "DJ30"],
   "timeframe": "15m",
   "candle_limit": 500,
-  "london_ny_session_symbols": [],
+  "london_ny_session_symbols": ["XAUUSD", "BTCUSDT"],
   "session_confidence_symbols": [],
   "news": {
     "enabled": true,

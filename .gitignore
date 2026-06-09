@@ -1,5 +1,6 @@
 logs/*.log
 trade_history.json
+active_trades.json
 signals.csv
 backtest_results.json
 __pycache__/

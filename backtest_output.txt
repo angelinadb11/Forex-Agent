@@ -1,0 +1,4 @@
+﻿Using existing data: C:\Users\user\Forex Agent\data\historical\xauusd_m15_30d.json
+
+Running backtest on local historical data...
+

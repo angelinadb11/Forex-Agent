@@ -354,3 +354,13 @@ class SMCAgent(Agent):
             confidence,
             f"{symbol} {timeframe} SMC: {summary}",
         )
+
+
+def smc_result_has_structure_conflict(result: AgentResult) -> bool:
+    """True when HH/HL structure conflicts with bearish ChoCH, or LH/LL vs bullish ChoCH."""
+    reason_lower = result.reason.lower()
+    bullish_structure = "bullish structure (hh/hl)" in reason_lower
+    bearish_structure = "bearish structure (lh/ll)" in reason_lower
+    bullish_choch = "bullish choch" in reason_lower
+    bearish_choch = "bearish choch" in reason_lower
+    return (bullish_structure and bearish_choch) or (bearish_structure and bullish_choch)

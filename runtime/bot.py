@@ -14,7 +14,16 @@ from strategy.signal_filter import FilterResult, SignalFilter
 from tracking.trade_monitor import ActiveTrade, TradeMonitor
 from tracking.console import safe_print
 
-AnalyzeSymbolFn = Callable[..., tuple[TradeSignal | None, dict[str, AgentResult] | None, FilterResult | None]]
+from strategy.scalp_mode import SCALP_TIMEFRAME, analyze_scalp_symbol, is_scalp_enabled
+
+AnalyzeSymbolFn = Callable[
+    ...,
+    tuple[TradeSignal | None, dict[str, AgentResult] | None, FilterResult | None, dict | None],
+]
+AnalyzeScalpFn = Callable[..., tuple[TradeSignal | None, dict | None, object]]
+PublishScalpFn = Callable[..., ActiveTrade]
+
+DEFAULT_SCALP_SCAN_INTERVAL_SECONDS = 300.0
 
 
 class BotRuntime:
@@ -36,6 +45,9 @@ class BotRuntime:
         poll_interval_seconds: float = 60.0,
         scan_interval_seconds: float = 900.0,
         publish_signal: Callable[..., ActiveTrade] | None = None,
+        analyze_scalp: AnalyzeScalpFn | None = None,
+        publish_scalp_signal: PublishScalpFn | None = None,
+        scalp_scan_interval_seconds: float = DEFAULT_SCALP_SCAN_INTERVAL_SECONDS,
         loop_sleep_seconds: float = 1.0,
     ) -> None:
         self.symbols = symbols
@@ -51,6 +63,9 @@ class BotRuntime:
         self.poll_interval_seconds = poll_interval_seconds
         self.scan_interval_seconds = scan_interval_seconds
         self.publish_signal_fn = publish_signal
+        self.analyze_scalp_fn = analyze_scalp
+        self.publish_scalp_signal_fn = publish_scalp_signal
+        self.scalp_scan_interval_seconds = scalp_scan_interval_seconds
         self.loop_sleep_seconds = loop_sleep_seconds
 
     def run_forever(self) -> None:
@@ -65,12 +80,16 @@ class BotRuntime:
         safe_print(f"Symbols: {', '.join(self.symbols)}")
         safe_print(f"Poll interval: {self.poll_interval_seconds:.0f}s")
         safe_print(f"Scan interval: {self.scan_interval_seconds:.0f}s")
+        safe_print(f"Scalp scan interval: {self.scalp_scan_interval_seconds:.0f}s")
         safe_print("Press Ctrl+C to stop.")
         safe_print()
 
         self._scan_all_symbols()
+        if self.analyze_scalp_fn is not None:
+            self._scan_scalp_all_symbols()
         last_poll = 0.0
         last_scan = time.monotonic()
+        last_scalp_scan = time.monotonic()
 
         try:
             while True:
@@ -83,6 +102,13 @@ class BotRuntime:
                 if now - last_scan >= self.scan_interval_seconds:
                     self._scan_all_symbols()
                     last_scan = now
+
+                if (
+                    self.analyze_scalp_fn is not None
+                    and now - last_scalp_scan >= self.scalp_scan_interval_seconds
+                ):
+                    self._scan_scalp_all_symbols()
+                    last_scalp_scan = now
 
                 time.sleep(self.loop_sleep_seconds)
         except KeyboardInterrupt:
@@ -146,7 +172,7 @@ class BotRuntime:
                 )
                 continue
 
-            signal, results, filter_result = self.analyze_symbol(
+            signal, results, filter_result, context = self.analyze_symbol(
                 symbol,
                 provider=self.provider,
                 timeframe=self.timeframe,
@@ -172,9 +198,91 @@ class BotRuntime:
                 signal,
                 results=results,
                 filter_result=filter_result,
+                context=context,
             )
             self.dedup.record_published(symbol, signal)
             self.logger.info("Signal published for %s", display_symbol)
+
+    def _scan_scalp_all_symbols(self) -> None:
+        if self.analyze_scalp_fn is None:
+            return
+
+        open_symbols = self._open_symbols()
+        for symbol in self.symbols:
+            display_symbol = resolve_symbol(symbol).display
+            if not is_scalp_enabled(display_symbol):
+                continue
+            if display_symbol in open_symbols:
+                self.logger.debug(
+                    "Skipping scalp scan for %s: open trade already active",
+                    display_symbol,
+                )
+                continue
+
+            signal, context, scalp_result = self.analyze_scalp_fn(
+                symbol,
+                provider=self.provider,
+                signal_generator=self.signal_generator,
+            )
+            if signal is None or scalp_result is None:
+                if scalp_result is not None and scalp_result.message:
+                    self.logger.debug(
+                        "Scalp skipped for %s: %s",
+                        display_symbol,
+                        scalp_result.message,
+                    )
+                continue
+
+            decision = self.dedup.can_publish(symbol, signal, self._open_symbols())
+            if not decision.allowed:
+                self.logger.info(
+                    "Scalp skipped for %s: %s",
+                    display_symbol,
+                    decision.reason,
+                )
+                continue
+
+            agents_agreement = format_agents_agreement(
+                scalp_result.m5_results or {},
+                scalp_result.direction,
+            )
+            self._publish_scalp_trade(
+                symbol,
+                signal,
+                agents_agreement=agents_agreement,
+                context=context,
+                m5_results=scalp_result.m5_results,
+            )
+            self.dedup.record_published(symbol, signal)
+            self.logger.info("Scalp signal published for %s", display_symbol)
+
+    def _publish_scalp_trade(
+        self,
+        symbol: str,
+        signal: TradeSignal,
+        *,
+        agents_agreement: str,
+        context: dict | None,
+        m5_results: dict[str, AgentResult] | None,
+    ) -> ActiveTrade:
+        if self.publish_scalp_signal_fn is not None:
+            return self.publish_scalp_signal_fn(
+                symbol,
+                signal,
+                agent_results=m5_results,
+                agents_agreement=agents_agreement,
+                context=context,
+            )
+
+        trade = ActiveTrade.from_signal(
+            symbol,
+            signal,
+            agents_agreement=agents_agreement,
+            timeframe=SCALP_TIMEFRAME,
+            entry_agent_results=m5_results,
+        )
+        self.monitor.register_trade(trade, context=context)
+        return trade
 
     def _publish_trade(
         self,
@@ -183,8 +291,13 @@ class BotRuntime:
         *,
         results: dict[str, AgentResult],
         filter_result: FilterResult,
+        context: dict | None = None,
     ) -> ActiveTrade:
-        agents_agreement = format_agents_agreement(results, filter_result.direction)
+        agents_agreement = format_agents_agreement(
+            results,
+            filter_result.direction,
+            config=self.signal_filter.decision_config,
+        )
         if self.publish_signal_fn is not None:
             return self.publish_signal_fn(
                 symbol,
@@ -193,6 +306,9 @@ class BotRuntime:
                 agent_results=results,
                 agents_agreement=agents_agreement,
                 news_warning=filter_result.news_warning,
+                off_hours_warning=filter_result.off_hours_warning,
+                h4_mismatch_warning=filter_result.h4_mismatch_warning,
+                context=context,
             )
 
         trade = ActiveTrade.from_signal(
@@ -202,5 +318,5 @@ class BotRuntime:
             timeframe=self.timeframe,
             entry_agent_results=results,
         )
-        self.monitor.active_trades.append(trade)
+        self.monitor.register_trade(trade, context=context)
         return trade

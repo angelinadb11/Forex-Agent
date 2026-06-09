@@ -5,6 +5,7 @@ from config.sl_config import SYMBOL_SL_CONFIG, calculate_lot_size, get_sl_config
 from signal_generator import (
     DEFAULT_DEPOSIT,
     SignalGenerator,
+    planned_rr_to_target,
     price_distance_pips,
 )
 
@@ -42,6 +43,34 @@ class SignalGeneratorSLTests(unittest.TestCase):
 
         self.assertIsNotNone(result.signal)
         self.assertEqual(result.signal.lot_size, 0.02)
+        self.assertAlmostEqual(
+            planned_rr_to_target(
+                result.signal.entry,
+                result.signal.tp1,
+                abs(result.signal.entry - result.signal.stop_loss),
+            ),
+            1.5,
+        )
+
+    def test_validate_sl_sets_standard_targets(self) -> None:
+        config = get_sl_config("XAUUSD")
+        assert config is not None
+        entry = 2650.00
+        risk = 50 * config.pip_size
+        stop_loss = entry - risk
+
+        result = self.generator.validate_sl(
+            symbol="XAUUSD",
+            direction=Direction.LONG,
+            entry=entry,
+            swing_price=stop_loss,
+            stop_loss=stop_loss,
+            confidence=0.80,
+        )
+        assert result.signal is not None
+        self.assertAlmostEqual(result.signal.tp1, entry + 1.5 * risk)
+        self.assertAlmostEqual(result.signal.tp2, entry + 2.5 * risk)
+        self.assertAlmostEqual(result.signal.tp3, entry + 3.5 * risk)
 
     def test_validate_sl_rejects_sl_too_far_for_xauusd(self) -> None:
         config = get_sl_config("XAUUSD")

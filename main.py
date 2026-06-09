@@ -1,7 +1,7 @@
 import argparse
 import logging
 
-from agents.base import AgentResult, Direction
+from agents.zone_helpers import ZoneCatalog
 from config import SUPPORTED_SYMBOLS, SUPPORTED_TIMEFRAMES, load_settings, resolve_symbol, resolve_symbols, resolve_timeframe
 from config.logging_config import setup_logging
 from config.settings import Settings
@@ -17,6 +17,7 @@ from strategy import (
     run_agents,
     SignalFilter,
 )
+from strategy.scalp_mode import ScalpPublishGate, analyze_scalp_symbol
 from strategy.signal_filter import MIN_CONFIDENCE, MIN_CONFIDENCE_PCT
 from tracking import TradeMonitor, print_trade_signal
 from tracking.console import safe_print, configure_console_encoding
@@ -112,7 +113,7 @@ def analyze_symbol(
     signal_filter: SignalFilter,
     signal_generator: SignalGenerator,
     logger: logging.Logger,
-) -> tuple[TradeSignal | None, dict[str, AgentResult] | None, object | None]:
+) -> tuple[TradeSignal | None, dict[str, AgentResult] | None, object | None, dict | None]:
     symbol_def = resolve_symbol(symbol)
     display_symbol = symbol_def.display
     data_source = provider.data_source(display_symbol)
@@ -127,10 +128,15 @@ def analyze_symbol(
 
     context = provider.to_context(display_symbol, timeframe, limit=candle_limit)
     candles = context["candles"]
+    context["zone_catalog"] = ZoneCatalog.from_candles(candles, display_symbol)
+    context["bar_index"] = len(candles) - 1
     logger.info("Loaded %s candles for %s", len(candles), display_symbol)
 
     results = run_agents(context)
-    final_direction, final_confidence, long_score, short_score = compute_final_decision(results)
+    final_direction, final_confidence, long_score, short_score = compute_final_decision(
+        results,
+        signal_filter.decision_config,
+    )
 
     safe_print()
     safe_print(f"Symbol: {display_symbol}")
@@ -141,6 +147,15 @@ def analyze_symbol(
     print_agent_result("SMC", results["smc"])
     safe_print()
     print_agent_result("Liquidity", results["liquidity"])
+    safe_print()
+    print_agent_result("FVG", results["fvg"])
+    safe_print()
+    print_agent_result("Order Block", results["order_block"])
+    safe_print()
+    print_agent_result("Trend Filter (H1)", results["trend_filter"])
+    if "h4_trend_filter" in results:
+        safe_print()
+        print_agent_result("Trend Filter (H4)", results["h4_trend_filter"])
     safe_print()
     print_agent_result("RSI", results["rsi"])
     safe_print()
@@ -160,6 +175,7 @@ def analyze_symbol(
         final_confidence,
         symbol=display_symbol,
         timestamp=context.get("timestamp"),
+        context=context,
     )
     print_filter_result(display_symbol, filter_result)
     safe_print()
@@ -184,22 +200,26 @@ def analyze_symbol(
     )
 
     if not filter_result.approved:
-        return None, results, filter_result
+        return None, results, filter_result, context
 
     signal_reason = build_signal_reason(results, filter_result.direction)
-    try:
-        signal = signal_generator.generate(
-            context,
-            filter_result.direction,
-            filter_result.confidence,
-            signal_reason,
-        )
-    except ValueError as exc:
+    generation = signal_generator.generate(
+        context,
+        filter_result.direction,
+        filter_result.confidence,
+        signal_reason,
+    )
+    if generation.signal is None:
         safe_print("=== TRADE SIGNAL ===")
-        safe_print(f"Signal not generated for {display_symbol}: {exc}")
-        logger.warning("Signal generation failed for %s: %s", display_symbol, exc)
-        return None, results, filter_result
+        safe_print(f"Signal not generated for {display_symbol}: {generation.rejection_reason}")
+        logger.warning(
+            "Signal generation failed for %s: %s",
+            display_symbol,
+            generation.rejection_reason,
+        )
+        return None, results, filter_result, context
 
+    signal = generation.signal
     print_trade_signal(display_symbol, signal)
     logger.info(
         "%s | SIGNAL | %s | entry=%.2f sl=%.2f tp1=%.2f tp2=%.2f tp3=%.2f | %s",
@@ -212,7 +232,7 @@ def analyze_symbol(
         signal.tp3,
         signal.reason,
     )
-    return signal, results, filter_result
+    return signal, results, filter_result, context
 
 
 def build_bot_runtime(
@@ -246,6 +266,7 @@ def build_bot_runtime(
     trade_manager = (
         TelegramTradeManager(
             price_fetcher=lambda symbol: provider.get_current_price(symbol),
+            candle_fetcher=lambda symbol, tf: provider.get_market_data(symbol, tf, limit=1)[-1],
             telegram_bot=telegram_bot,
             poll_interval=poll_interval,
             context_fetcher=context_fetcher,
@@ -259,6 +280,7 @@ def build_bot_runtime(
     else:
         monitor = TradeMonitor(
             price_fetcher=lambda symbol: provider.get_current_price(symbol),
+            candle_fetcher=lambda symbol, tf: provider.get_market_data(symbol, tf, limit=1)[-1],
             telegram_bot=None,
             context_fetcher=context_fetcher,
         )
@@ -267,8 +289,22 @@ def build_bot_runtime(
         duplicate_entry_tolerance_pct=settings.duplicate_entry_tolerance_pct,
         signal_cooldown_minutes=settings.signal_cooldown_minutes,
     )
+    dedup.seed_from_active_trades(monitor.active_trades)
 
     publish_signal = trade_manager.publish_signal if trade_manager is not None else None
+    publish_scalp_signal = (
+        trade_manager.publish_scalp_signal if trade_manager is not None else None
+    )
+
+    scalp_publish_gate = ScalpPublishGate()
+
+    def analyze_scalp(symbol: str, **kwargs):
+        return analyze_scalp_symbol(
+            symbol,
+            signal_generator=signal_generator,
+            publish_gate=scalp_publish_gate,
+            **kwargs,
+        )
 
     return BotRuntime(
         symbols=symbols,
@@ -284,6 +320,8 @@ def build_bot_runtime(
         poll_interval_seconds=poll_interval,
         scan_interval_seconds=scan_interval,
         publish_signal=publish_signal,
+        analyze_scalp=analyze_scalp,
+        publish_scalp_signal=publish_scalp_signal,
     )
 
 

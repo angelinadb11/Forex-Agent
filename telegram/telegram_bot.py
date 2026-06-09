@@ -13,6 +13,7 @@ from signal_generator import TradeSignal
 from telegram.message_format import (
     format_agent_result,
     format_agent_summary,
+    format_scalp_trade_signal as build_scalp_trade_signal_message,
     format_trade_signal as build_trade_signal_message,
     format_trade_update_warning as build_trade_update_warning_message,
     format_high_risk_update as build_high_risk_update_message,
@@ -256,8 +257,18 @@ class TelegramBot:
         timeframe: str,
         results: dict[str, AgentResult] | None = None,
         news_warning: str | None = None,
+        off_hours_warning: str | None = None,
+        h4_mismatch_warning: str | None = None,
     ) -> str:
-        return build_trade_signal_message(symbol, signal, timeframe, results, news_warning)
+        return build_trade_signal_message(
+            symbol,
+            signal,
+            timeframe,
+            results,
+            news_warning,
+            off_hours_warning,
+            h4_mismatch_warning,
+        )
 
     def send_trade_signal(
         self,
@@ -267,6 +278,8 @@ class TelegramBot:
         timeframe: str,
         agent_results: dict[str, AgentResult] | None = None,
         news_warning: str | None = None,
+        off_hours_warning: str | None = None,
+        h4_mismatch_warning: str | None = None,
     ) -> int:
         """Format and send a generated trade signal."""
         if signal.confidence < 0.70:
@@ -276,6 +289,25 @@ class TelegramBot:
             symbol,
             signal,
             timeframe,
+            agent_results,
+            news_warning,
+            off_hours_warning,
+            h4_mismatch_warning,
+        )
+        return self.send_message(message)
+
+    def send_scalp_trade_signal(
+        self,
+        symbol: str,
+        signal: TradeSignal,
+        *,
+        agent_results: dict[str, AgentResult] | None = None,
+        news_warning: str | None = None,
+    ) -> int:
+        """Format and send a scalp trade signal."""
+        message = build_scalp_trade_signal_message(
+            symbol,
+            signal,
             agent_results,
             news_warning,
         )
@@ -303,6 +335,24 @@ class TelegramBot:
             lines.append(reason)
         self.send_message("\n".join(lines))
 
+    def send_profit_milestone_reply(
+        self,
+        message: str,
+        *,
+        reply_to_message_id: int | None = None,
+    ) -> int:
+        """Send a motivational profit milestone reply linked to the signal."""
+        return self.send_trade_reply(message, reply_to_message_id=reply_to_message_id)
+
+    def send_structure_weakness_warning(
+        self,
+        message: str,
+        *,
+        reply_to_message_id: int | None = None,
+    ) -> int:
+        """Send a structure-based position weakness warning as a reply."""
+        return self.send_trade_reply(message, reply_to_message_id=reply_to_message_id)
+
     def send_trend_change_warning(
         self,
         *,
@@ -310,7 +360,8 @@ class TelegramBot:
         open_time: str,
         direction: Direction,
         current_price: float,
-        reason: str = "Різка зміна тренду на H1",
+        entry: float | None = None,
+        reason: str = "Зміна тренду H1 проти позиції",
     ) -> int:
         from telegram.message_format import format_trend_change_warning
 
@@ -318,6 +369,7 @@ class TelegramBot:
             open_time=open_time,
             direction=direction,
             current_price=current_price,
+            entry=entry,
             reason=reason,
         )
         return self.send_trade_reply(message, reply_to_message_id=reply_to_message_id)
@@ -359,6 +411,21 @@ class TelegramBot:
             lot_size=trade.lot_size,
         )
         message = format_stop_loss_reply(result_dollars=result_dollars)
+        return self.send_trade_reply(message, reply_to_message_id=reply_to_message_id)
+
+    def send_breakeven_reply(
+        self,
+        trade,
+        *,
+        reply_to_message_id: int | None,
+    ) -> int:
+        from telegram.message_format import format_breakeven_reply
+
+        message = format_breakeven_reply(
+            direction=trade.direction,
+            entry=trade.entry,
+            exit_price=trade.stop_loss,
+        )
         return self.send_trade_reply(message, reply_to_message_id=reply_to_message_id)
 
     def send_take_profit_reply(

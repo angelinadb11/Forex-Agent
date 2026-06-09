@@ -29,6 +29,28 @@ class SignalDedupGateTests(unittest.TestCase):
         decision = gate.can_publish("BTCUSDT", self._signal(entry=101.0, sl=90.0), set())
         self.assertTrue(decision.allowed)
 
+    def test_seeds_fingerprint_from_active_trade(self):
+        from tracking.trade_monitor import ActiveTrade
+
+        gate = SignalDedupGate(signal_cooldown_minutes=0)
+        trade = ActiveTrade(
+            symbol="BTCUSDT",
+            direction=Direction.LONG,
+            entry=100.0,
+            stop_loss=90.0,
+            tp1=110.0,
+            tp2=120.0,
+            tp3=130.0,
+            confidence=0.80,
+            reason="seed",
+            open_time="2026-06-07T00:00:00+00:00",
+            initial_stop_loss=90.0,
+        )
+        gate.seed_from_active_trades([trade])
+        decision = gate.can_publish("BTCUSDT", self._signal(), set())
+        self.assertFalse(decision.allowed)
+        self.assertIn("duplicate setup", decision.reason or "")
+
 
 if __name__ == "__main__":
     unittest.main()

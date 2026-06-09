@@ -2,9 +2,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from typing import Iterable
 
 from config.symbols import resolve_symbol
 from signal_generator import TradeSignal, resolve_signal_direction
+from tracking.trade_monitor import ActiveTrade
 
 
 @dataclass(frozen=True)
@@ -66,6 +68,23 @@ class SignalDedupGate:
             self._cooldown_until[display_symbol] = datetime.now(timezone.utc) + timedelta(
                 minutes=self.signal_cooldown_minutes
             )
+
+    def seed_from_active_trades(self, trades: Iterable[ActiveTrade]) -> None:
+        """Restore dedup fingerprints from persisted open trades after restart."""
+        for trade in trades:
+            if trade.closed:
+                continue
+            signal = TradeSignal(
+                trade.direction,
+                trade.entry,
+                trade.stop_loss,
+                trade.tp1,
+                trade.tp2,
+                trade.tp3,
+                trade.confidence,
+                trade.reason,
+            )
+            self.record_published(trade.symbol, signal)
 
     def _fingerprint(self, signal: TradeSignal) -> str:
         direction = resolve_signal_direction(signal)

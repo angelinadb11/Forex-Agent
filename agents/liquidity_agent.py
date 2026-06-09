@@ -6,6 +6,12 @@ from typing import Any, Literal
 import pandas as pd
 
 from agents.base import Agent, AgentResult, Direction
+from agents.zone_helpers import price_in_active_entry_zone
+
+CONFIRMATION_AGENT_NAMES = ("smc", "fvg", "order_block")
+MAX_LIQUIDITY_CONFIDENCE = 0.50
+SWEEP_SCORE = 0.20
+STOP_HUNT_SCORE = 0.15
 
 
 @dataclass(frozen=True)
@@ -246,6 +252,16 @@ class LiquidityAgent(Agent):
             symbol=symbol,
             timeframe=timeframe,
         )
+        peer_results = context.get("agent_results")
+        if isinstance(peer_results, dict):
+            direction, confidence, reason = self._apply_confirmation(
+                direction=direction,
+                confidence=confidence,
+                reason=reason,
+                analysis=analysis,
+                peer_results=peer_results,
+                context=context,
+            )
         return AgentResult(direction=direction, confidence=confidence, reason=reason)
 
     def _evaluate_analysis(
@@ -281,26 +297,26 @@ class LiquidityAgent(Agent):
             reasons.append(f"sell-side liquidity below at {analysis.sell_side_liquidity:.5f}")
 
         if analysis.liquidity_sweep == "bullish":
-            bullish_score += 0.30
+            bullish_score += SWEEP_SCORE
             reasons.append("bullish liquidity sweep (SSL taken)")
         elif analysis.liquidity_sweep == "bearish":
-            bearish_score += 0.30
+            bearish_score += SWEEP_SCORE
             reasons.append("bearish liquidity sweep (BSL taken)")
 
         if analysis.stop_hunt == "bullish":
-            bullish_score += 0.25
+            bullish_score += STOP_HUNT_SCORE
             reasons.append("stop hunt at equal lows")
         elif analysis.stop_hunt == "bearish":
-            bearish_score += 0.25
+            bearish_score += STOP_HUNT_SCORE
             reasons.append("stop hunt at equal highs")
 
         if bullish_score > bearish_score and bullish_score >= 0.35:
-            confidence = round(min(1.0, bullish_score), 2)
+            confidence = round(min(MAX_LIQUIDITY_CONFIDENCE, bullish_score), 2)
             reason = f"{symbol} {timeframe} Liquidity: " + ", ".join(reasons)
             return Direction.LONG, confidence, reason
 
         if bearish_score > bullish_score and bearish_score >= 0.35:
-            confidence = round(min(1.0, bearish_score), 2)
+            confidence = round(min(MAX_LIQUIDITY_CONFIDENCE, bearish_score), 2)
             reason = f"{symbol} {timeframe} Liquidity: " + ", ".join(reasons)
             return Direction.SHORT, confidence, reason
 
@@ -311,3 +327,59 @@ class LiquidityAgent(Agent):
             confidence,
             f"{symbol} {timeframe} Liquidity: {summary}",
         )
+
+    @staticmethod
+    def _peer_confirms(
+        peer_results: dict[str, AgentResult],
+        direction: Direction,
+    ) -> bool:
+        return any(
+            peer_results.get(name) is not None
+            and peer_results[name].direction == direction
+            for name in CONFIRMATION_AGENT_NAMES
+        )
+
+    @staticmethod
+    def _smc_has_structure_break(
+        smc_result: AgentResult | None,
+        direction: Direction,
+    ) -> bool:
+        if smc_result is None or smc_result.direction != direction:
+            return False
+        reason_lower = smc_result.reason.lower()
+        if direction == Direction.LONG:
+            return "bullish bos" in reason_lower or "bullish choch" in reason_lower
+        return "bearish bos" in reason_lower or "bearish choch" in reason_lower
+
+    def _apply_confirmation(
+        self,
+        *,
+        direction: Direction,
+        confidence: float,
+        reason: str,
+        analysis: LiquidityAnalysis,
+        peer_results: dict[str, AgentResult],
+        context: dict[str, Any],
+    ) -> tuple[Direction, float, str]:
+        if direction == Direction.NEUTRAL:
+            return direction, confidence, reason
+
+        if not self._peer_confirms(peer_results, direction):
+            return (
+                Direction.NEUTRAL,
+                confidence,
+                f"{reason}; neutralized — no SMC/FVG/OB confirmation",
+            )
+
+        if analysis.liquidity_sweep is not None:
+            smc_result = peer_results.get("smc")
+            structure_confirmed = self._smc_has_structure_break(smc_result, direction)
+            zone_confirmed = price_in_active_entry_zone(context, direction)
+            if not (structure_confirmed or zone_confirmed):
+                return (
+                    Direction.NEUTRAL,
+                    confidence,
+                    f"{reason}; neutralized — sweep without BOS/ChoCH or OB/FVG zone",
+                )
+
+        return direction, round(min(MAX_LIQUIDITY_CONFIDENCE, confidence), 2), reason

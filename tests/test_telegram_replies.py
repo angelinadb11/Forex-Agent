@@ -19,10 +19,14 @@ class TelegramReplyFormatTests(unittest.TestCase):
             open_time="2026-06-07T14:30:00+00:00",
             direction=Direction.LONG,
             current_price=2650.50,
+            entry=2650.00,
         )
         self.assertIn("⚠️ УВАГА — Зміна тренду", message)
-        self.assertIn("Різка зміна тренду на H1", message)
+        self.assertIn("Зміна тренду H1 проти позиції", message)
         self.assertIn("2650.50", message)
+        self.assertIn("2650.00", message)
+        self.assertIn("TP1 ще не досягнуто", message)
+        self.assertIn("Перенеси SL на точку входу (беззбиток)", message)
         self.assertIn("📌 Що робити зараз:", message)
         self.assertIn("Не додавай до позиції", message)
 
@@ -60,7 +64,7 @@ class TelegramReplyFormatTests(unittest.TestCase):
         self.assertIn("+10.0 pips", message)
         self.assertIn("2650.00", message)
         self.assertIn("2652.00", message)
-        self.assertIn("безризиковій угоді", message)
+        self.assertIn("50% позиції", message)
 
     def test_tp2_reply_format(self):
         message = format_take_profit_reply(
@@ -78,7 +82,7 @@ class TelegramReplyFormatTests(unittest.TestCase):
         self.assertIn("+20.0 pips", message)
         self.assertIn("2649.00", message)
         self.assertIn("2647.00", message)
-        self.assertIn("50% позиції", message)
+        self.assertIn("25% позиції", message)
 
     def test_xauusd_pip_helpers(self):
         move = trade_move_pips(

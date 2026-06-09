@@ -23,6 +23,9 @@ DEFAULT_SWING_LOOKBACK = 5
 DEFAULT_ATR_PERIOD = 14
 DEFAULT_ATR_BUFFER_MULTIPLIER = 0.3
 DEFAULT_DEPOSIT = 200.0
+MIN_RR_TO_TP1 = 1.5
+TP_STEP_R = 1.0
+RR_COMPARISON_EPSILON = 1e-6
 DEFAULT_LOT_SIZE = calculate_lot_size_for_symbol(DEFAULT_DEPOSIT, "XAUUSD")
 
 
@@ -171,6 +174,32 @@ def price_distance_pips(distance: float, pip_size: float) -> float:
     return abs(distance) / pip_size
 
 
+def planned_rr_to_target(entry: float, target: float, risk: float) -> float:
+    if risk == 0:
+        return 0.0
+    return abs(target - entry) / risk
+
+
+def build_take_profit_levels(
+    direction: Direction,
+    entry: float,
+    risk: float,
+    *,
+    min_rr_tp1: float = MIN_RR_TO_TP1,
+    step_r: float = TP_STEP_R,
+) -> tuple[float, float, float]:
+    if direction == Direction.LONG:
+        tp1 = entry + min_rr_tp1 * risk
+        tp2 = entry + (min_rr_tp1 + step_r) * risk
+        tp3 = entry + (min_rr_tp1 + 2 * step_r) * risk
+        return tp1, tp2, tp3
+
+    tp1 = entry - min_rr_tp1 * risk
+    tp2 = entry - (min_rr_tp1 + step_r) * risk
+    tp3 = entry - (min_rr_tp1 + 2 * step_r) * risk
+    return tp1, tp2, tp3
+
+
 class SignalGenerator:
     """Builds R-multiple trade signals from market context and direction."""
 
@@ -298,18 +327,30 @@ class SignalGenerator:
         if atr_buffer is not None:
             buffer_note = f", ATR buffer {atr_buffer:.2f}"
 
+        tp1, tp2, tp3 = build_take_profit_levels(direction, entry, risk)
+        tp1_rr = planned_rr_to_target(entry, tp1, risk)
+        if tp1_rr + RR_COMPARISON_EPSILON < MIN_RR_TO_TP1:
+            return SLValidationResult(
+                rejection_reason=(
+                    f"RR rejected: TP1 at {tp1_rr:.2f}R "
+                    f"below minimum {MIN_RR_TO_TP1:.1f}R for {symbol}"
+                ),
+            )
+
         if direction == Direction.LONG:
             signal_reason = reason or (
                 f"LONG signal: SL at swing low {swing_price:.2f}{buffer_note}, "
-                f"risk {risk:.2f} ({lot_size:.2f} lot), targets at 1R/2R/3R"
+                f"risk {risk:.2f} ({lot_size:.2f} lot), "
+                f"targets at {MIN_RR_TO_TP1:.1f}R/{MIN_RR_TO_TP1 + TP_STEP_R:.1f}R/"
+                f"{MIN_RR_TO_TP1 + 2 * TP_STEP_R:.1f}R"
             )
             signal = TradeSignal(
                 direction=Direction.LONG,
                 entry=entry,
                 stop_loss=stop_loss,
-                tp1=entry + risk,
-                tp2=entry + risk * 2,
-                tp3=entry + risk * 3,
+                tp1=tp1,
+                tp2=tp2,
+                tp3=tp3,
                 confidence=confidence,
                 reason=signal_reason,
                 lot_size=lot_size,
@@ -317,20 +358,127 @@ class SignalGenerator:
         else:
             signal_reason = reason or (
                 f"SHORT signal: SL at swing high {swing_price:.2f}{buffer_note}, "
-                f"risk {risk:.2f} ({lot_size:.2f} lot), targets at 1R/2R/3R"
+                f"risk {risk:.2f} ({lot_size:.2f} lot), "
+                f"targets at {MIN_RR_TO_TP1:.1f}R/{MIN_RR_TO_TP1 + TP_STEP_R:.1f}R/"
+                f"{MIN_RR_TO_TP1 + 2 * TP_STEP_R:.1f}R"
             )
             signal = TradeSignal(
                 direction=Direction.SHORT,
                 entry=entry,
                 stop_loss=stop_loss,
-                tp1=entry - risk,
-                tp2=entry - risk * 2,
-                tp3=entry - risk * 3,
+                tp1=tp1,
+                tp2=tp2,
+                tp3=tp3,
                 confidence=confidence,
                 reason=signal_reason,
                 lot_size=lot_size,
             )
 
+        return SLValidationResult(signal=align_trade_signal_direction(signal))
+
+    def generate_scalp(
+        self,
+        context: dict[str, Any],
+        direction: Direction,
+        confidence: float,
+        reason: str = "",
+        *,
+        max_sl_pips: float = 20.0,
+    ) -> SLValidationResult:
+        """Build a capped-risk scalp signal on the active timeframe context."""
+        direction = coerce_direction(direction)
+        if direction == Direction.NEUTRAL:
+            return SLValidationResult(
+                rejection_reason="Cannot generate a scalp signal for NEUTRAL direction",
+            )
+
+        symbol = str(context.get("symbol", "UNKNOWN")).upper()
+        try:
+            display_symbol = resolve_symbol(symbol).display
+        except ValueError:
+            display_symbol = symbol
+
+        sl_config = get_sl_config(display_symbol)
+        if sl_config is None:
+            return SLValidationResult(
+                rejection_reason=f"Scalp SL config unavailable for {display_symbol}",
+            )
+
+        try:
+            df = _candles_to_dataframe(context)
+            entry = float(df.iloc[-1]["close"])
+            atr = calculate_atr(df, period=self.atr_period)
+            atr_buffer = atr * self.atr_buffer_multiplier
+            swing_highs, swing_lows = _find_swing_points(df, lookback=self.swing_lookback)
+        except ValueError as exc:
+            return SLValidationResult(rejection_reason=str(exc))
+
+        pip_size = sl_config.pip_size
+        max_risk = max_sl_pips * pip_size
+
+        if direction == Direction.LONG:
+            if not swing_lows:
+                stop_loss = entry - max_risk
+                swing_price = stop_loss
+            else:
+                swing_price = swing_lows[-1].price
+                stop_loss = swing_price - atr_buffer
+                if stop_loss >= entry:
+                    return SLValidationResult(
+                        rejection_reason="Buffered stop loss must be below entry for LONG scalp",
+                    )
+        else:
+            if not swing_highs:
+                stop_loss = entry + max_risk
+                swing_price = stop_loss
+            else:
+                swing_price = swing_highs[-1].price
+                stop_loss = swing_price + atr_buffer
+                if stop_loss <= entry:
+                    return SLValidationResult(
+                        rejection_reason="Buffered stop loss must be above entry for SHORT scalp",
+                    )
+
+        risk = abs(entry - stop_loss)
+        if risk > max_risk:
+            stop_loss = entry - max_risk if direction == Direction.LONG else entry + max_risk
+            risk = max_risk
+
+        if risk <= 0:
+            return SLValidationResult(rejection_reason="Scalp risk must be positive")
+
+        sl_pips = price_distance_pips(risk, pip_size)
+        if sl_pips > max_sl_pips + RR_COMPARISON_EPSILON:
+            return SLValidationResult(
+                rejection_reason=(
+                    f"Scalp SL rejected: {sl_pips:.1f} pips exceeds maximum {max_sl_pips:.0f} pips"
+                ),
+            )
+
+        tp1, tp2, _ = build_take_profit_levels(
+            direction,
+            entry,
+            risk,
+            min_rr_tp1=1.0,
+            step_r=1.0,
+        )
+        tp3 = tp2
+        lot_size = calculate_lot_size_for_symbol(self.deposit, display_symbol)
+        scalp_reason = reason or (
+            f"Scalp {direction.value.upper()}: SL {sl_pips:.1f} pips max, targets 1R/2R"
+        )
+
+        signal = TradeSignal(
+            direction=direction,
+            entry=entry,
+            stop_loss=stop_loss,
+            tp1=tp1,
+            tp2=tp2,
+            tp3=tp3,
+            confidence=confidence,
+            reason=scalp_reason,
+            lot_size=lot_size,
+        )
         return SLValidationResult(signal=align_trade_signal_direction(signal))
 
     def print_signal(

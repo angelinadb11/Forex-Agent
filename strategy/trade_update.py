@@ -237,6 +237,27 @@ def assess_trade_weakening(
     )
 
 
+def assess_trend_opposes_trade(
+    trade_direction: Direction,
+    current_results: dict[str, AgentResult],
+) -> bool:
+    """Return True when H1 trend filter opposes the open trade direction."""
+    trend = current_results.get("trend_filter")
+    if trend is None:
+        return False
+
+    if trend.direction == Direction.NEUTRAL:
+        return True
+
+    if trade_direction == Direction.LONG and trend.direction == Direction.SHORT:
+        return True
+
+    if trade_direction == Direction.SHORT and trend.direction == Direction.LONG:
+        return True
+
+    return False
+
+
 class TradeUpdateChecker:
     """Re-analyzes open trades and emits informational warnings only."""
 

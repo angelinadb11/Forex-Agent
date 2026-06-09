@@ -19,6 +19,8 @@ TIMEFRAME_RANGE: dict[str, str] = {
     "1m": "7d",
     "5m": "1mo",
     "15m": "1mo",
+    "1h": "6mo",
+    "4h": "6mo",
 }
 
 
@@ -44,7 +46,7 @@ class IndexProvider(BaseDataProvider):
             raise ValueError(f"Unsupported index symbol '{symbol}'. Use one of: {supported}")
 
         ticker = INDEX_SYMBOLS[symbol]["yahoo_ticker"]
-        range_param = TIMEFRAME_RANGE[timeframe]
+        range_param = self._range_for_limit(timeframe, limit)
         raw = self._fetch_chart(ticker, timeframe, range_param)
         candles = self._parse_chart_response(raw)
 
@@ -52,6 +54,15 @@ class IndexProvider(BaseDataProvider):
             return candles
 
         return candles[-limit:]
+
+    @staticmethod
+    def _range_for_limit(timeframe: str, limit: int) -> str:
+        if timeframe == "15m":
+            if limit > 1500:
+                return "60d"
+            if limit > 500:
+                return "60d"
+        return TIMEFRAME_RANGE[timeframe]
 
     def index_name(self, symbol: str) -> str:
         symbol = self.normalize_symbol(symbol)

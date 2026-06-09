@@ -6,13 +6,14 @@ from typing import Callable, TYPE_CHECKING
 
 from agents.base import AgentResult, Direction
 from signal_generator import TradeSignal, align_trade_signal_direction, resolve_signal_direction
-from strategy.trade_update import (
-    LEVEL2_STANDARD_CONFIRMATION_CYCLES,
-    TradeUpdateChecker,
-    WarningLevel,
-    assess_trend_opposes_trade,
+from strategy.structure_weakness import (
+    StructureWeaknessChecker,
+    enrich_trade_entry_context,
 )
+from strategy.trend_breakeven_alert import TrendBreakevenAlertChecker
 from tracking.console import safe_print
+from tracking.level_checks import stop_loss_hit, take_profit_hit
+from tracking.profit_milestones import pending_profit_milestone_messages
 from tracking.signal_csv import SignalCsvRow, SignalCsvStore
 from tracking.trade_history import TradeHistoryStore, TradeRecord, TradeStatisticsCalculator, utc_now_iso
 
@@ -20,9 +21,9 @@ if TYPE_CHECKING:
     from telegram.telegram_bot import TelegramBot
 
 PriceFetcher = Callable[[str], float]
+CandleFetcher = Callable[[str, str], dict[str, float]]
 ContextFetcher = Callable[[str, str], dict]
 
-TREND_WARNING_INTERVAL_SECONDS = 300.0
 DEFAULT_LOT_SIZE = 0.01
 
 
@@ -43,6 +44,14 @@ class ActiveTrade:
     timeframe: str = ""
     entry_agent_results: dict[str, AgentResult] | None = None
     entry_trend_direction: Direction | None = None
+    entry_zone_low: float | None = None
+    entry_zone_high: float | None = None
+    entry_zone_kind: str | None = None
+    entry_rsi: float | None = None
+    last_rsi: float | None = None
+    structure_warning_count: int = 0
+    last_structure_candle_open_time: float | None = None
+    last_structure_check_monotonic: float = 0.0
     telegram_message_id: int | None = None
     lot_size: float = DEFAULT_LOT_SIZE
     level1_warning_sent: bool = False
@@ -50,11 +59,13 @@ class ActiveTrade:
     level2_streak: int = 0
     trend_warning_sent: bool = False
     last_trend_check_monotonic: float = 0.0
+    last_trend_candle_open_time: float | None = None
     tp1_reply_sent: bool = False
     tp2_reply_sent: bool = False
     tp3_reply_sent: bool = False
     sl_reply_sent: bool = False
     sl_proximity_warning_sent: bool = False
+    profit_milestones_sent: list[int] | None = None
     tp1_hit: bool = False
     tp2_hit: bool = False
     tp3_hit: bool = False
@@ -132,6 +143,7 @@ class ActiveTrade:
             tp1_hit=self.tp1_hit,
             tp2_hit=self.tp2_hit,
             tp3_hit=self.tp3_hit,
+            entry_agent_results=self.entry_agent_results,
         )
 
 
@@ -146,18 +158,28 @@ class TradeMonitor:
         telegram_bot: TelegramBot | None = None,
         signal_csv_store: SignalCsvStore | None = None,
         context_fetcher: ContextFetcher | None = None,
-        trade_update_checker: TradeUpdateChecker | None = None,
+        structure_weakness_checker: StructureWeaknessChecker | None = None,
+        trend_breakeven_checker: TrendBreakevenAlertChecker | None = None,
+        candle_fetcher: CandleFetcher | None = None,
     ) -> None:
         self.price_fetcher = price_fetcher
+        self.candle_fetcher = candle_fetcher
         self.history_store = history_store or TradeHistoryStore()
         self.stats_calculator = stats_calculator or TradeStatisticsCalculator()
         self.telegram_bot = telegram_bot
         self.signal_csv_store = signal_csv_store or SignalCsvStore()
         self.context_fetcher = context_fetcher
-        self.trade_update_checker = (
-            trade_update_checker
-            if trade_update_checker is not None
-            else TradeUpdateChecker(context_fetcher)
+        self.structure_weakness_checker = (
+            structure_weakness_checker
+            if structure_weakness_checker is not None
+            else StructureWeaknessChecker(context_fetcher)
+            if context_fetcher is not None
+            else None
+        )
+        self.trend_breakeven_checker = (
+            trend_breakeven_checker
+            if trend_breakeven_checker is not None
+            else TrendBreakevenAlertChecker(context_fetcher)
             if context_fetcher is not None
             else None
         )
@@ -166,7 +188,24 @@ class TradeMonitor:
         self.active_trades_store = ActiveTradesStore()
         self.active_trades = self.active_trades_store.load()
 
-    def register_trade(self, trade: ActiveTrade) -> ActiveTrade:
+    def register_trade(
+        self,
+        trade: ActiveTrade,
+        *,
+        context: dict | None = None,
+    ) -> ActiveTrade:
+        if context is not None:
+            enrich_trade_entry_context(trade, context)
+        elif self.context_fetcher is not None and trade.entry_zone_low is None:
+            try:
+                timeframe = trade.timeframe or "15m"
+                enrich_trade_entry_context(
+                    trade,
+                    self.context_fetcher(trade.symbol, timeframe),
+                )
+            except Exception as exc:
+                safe_print(f"Entry context enrichment failed for {trade.symbol}: {exc}")
+
         if trade not in self.active_trades:
             self.active_trades.append(trade)
         self._persist_active_trades()
@@ -203,14 +242,20 @@ class TradeMonitor:
             if trade.closed:
                 continue
 
-            price = self.price_fetcher(trade.symbol)
+            candle = self._fetch_candle(trade)
+            high = candle["high"]
+            low = candle["low"]
+            price = candle.get("close", (high + low) / 2)
+
             self._check_sl_proximity(trade, price)
             if not trade.closed:
-                self._evaluate_price(trade, price)
+                self._check_trend_breakeven_alert(trade, price)
             if not trade.closed:
-                self._check_trend_warning(trade, price)
+                self._check_profit_milestones(trade, high, low)
             if not trade.closed:
-                self._check_trade_update(trade)
+                self._evaluate_candle(trade, high, low)
+            if not trade.closed:
+                self._check_structure_weakness(trade)
 
             if trade.closed:
                 self._close_trade(trade)
@@ -301,116 +346,168 @@ class TradeMonitor:
         safe_print(message)
         self._send_sl_proximity_warning(trade, price, remaining_pips)
 
-    def _check_trade_update(self, trade: ActiveTrade) -> None:
-        if self.trade_update_checker is None:
-            return
-
-        try:
-            assessment = self.trade_update_checker.analyze(trade)
-        except Exception as exc:
-            safe_print(f"Trade update check failed for {trade.symbol}: {exc}")
-            return
-
-        if assessment is None:
-            return
-
-        if assessment.level2_instant:
-            trade.level2_streak = 0
-            if not trade.level2_warning_sent:
-                self._notify_high_risk_update(trade, list(assessment.level2_reasons))
-                trade.level2_warning_sent = True
-            return
-
-        if assessment.level2_standard:
-            trade.level2_streak += 1
-            if (
-                trade.level2_streak >= LEVEL2_STANDARD_CONFIRMATION_CYCLES
-                and not trade.level2_warning_sent
-            ):
-                self._notify_high_risk_update(trade, list(assessment.level2_reasons))
-                trade.level2_warning_sent = True
-            return
-
-        trade.level2_streak = 0
-
-        if assessment.level != WarningLevel.LEVEL_1:
-            return
-        if trade.level1_warning_sent or trade.level2_warning_sent:
-            return
-
-        trade.level1_warning_sent = True
-        self._notify_trade_update_level1(trade, list(assessment.reasons))
-        self._persist_active_trades()
-
-    def _check_trend_warning(self, trade: ActiveTrade, price: float) -> None:
-        if trade.trend_warning_sent or self.context_fetcher is None:
-            return
-
-        now = time.monotonic()
-        if (
-            trade.last_trend_check_monotonic
-            and now - trade.last_trend_check_monotonic < TREND_WARNING_INTERVAL_SECONDS
+    def _check_profit_milestones(
+        self,
+        trade: ActiveTrade,
+        high: float,
+        low: float,
+    ) -> None:
+        if stop_loss_hit(
+            direction=trade.direction,
+            high=high,
+            low=low,
+            stop_loss=trade.stop_loss,
         ):
             return
 
-        trade.last_trend_check_monotonic = now
-
-        try:
-            context = self.context_fetcher(trade.symbol, trade.timeframe)
-            from strategy.runner import run_agents
-
-            current_results = run_agents(context)
-        except Exception as exc:
-            safe_print(f"Trend warning check failed for {trade.symbol}: {exc}")
+        if self._any_take_profit_hit_on_candle(trade, high, low):
             return
 
-        if not assess_trend_opposes_trade(trade.direction, current_results):
+        messages = pending_profit_milestone_messages(trade, high=high, low=low)
+        if not messages:
+            return
+
+        for message in messages:
+            self._notify_profit_milestone(trade, message)
+        self._persist_active_trades()
+
+    def _any_take_profit_hit_on_candle(
+        self,
+        trade: ActiveTrade,
+        high: float,
+        low: float,
+    ) -> bool:
+        targets = (
+            (trade.tp1, trade.tp1_hit),
+            (trade.tp2, trade.tp2_hit),
+            (trade.tp3, trade.tp3_hit),
+        )
+        for tp_price, already_hit in targets:
+            if already_hit:
+                continue
+            if take_profit_hit(
+                direction=trade.direction,
+                high=high,
+                low=low,
+                tp_price=tp_price,
+            ):
+                return True
+        return False
+
+    def _notify_profit_milestone(self, trade: ActiveTrade, message: str) -> None:
+        safe_print()
+        safe_print(message)
+        self._send_profit_milestone_reply(trade, message)
+
+    def _send_profit_milestone_reply(self, trade: ActiveTrade, message: str) -> None:
+        if self.telegram_bot is None:
+            return
+
+        try:
+            self.telegram_bot.send_profit_milestone_reply(
+                message,
+                reply_to_message_id=trade.telegram_message_id,
+            )
+        except Exception as exc:
+            safe_print(f"Telegram profit milestone failed: {exc}")
+
+    def _check_trend_breakeven_alert(self, trade: ActiveTrade, price: float) -> None:
+        if self.trend_breakeven_checker is None:
+            return
+
+        try:
+            should_alert = self.trend_breakeven_checker.analyze(
+                trade,
+                now_monotonic=time.monotonic(),
+            )
+        except Exception as exc:
+            safe_print(f"Trend breakeven check failed for {trade.symbol}: {exc}")
+            return
+
+        if not should_alert:
             return
 
         trade.trend_warning_sent = True
-        self._notify_trend_warning(trade, price)
+        self._notify_trend_breakeven_alert(trade, price)
         self._persist_active_trades()
 
-    def _notify_trend_warning(self, trade: ActiveTrade, price: float) -> None:
-        from telegram.message_format import format_trend_change_warning
-
-        message = format_trend_change_warning(
-            open_time=trade.open_time,
-            direction=trade.direction,
-            current_price=price,
+    def _notify_trend_breakeven_alert(self, trade: ActiveTrade, price: float) -> None:
+        safe_print()
+        safe_print(
+            f"Trend flip before TP1 for {trade.symbol} — move SL to entry ({trade.entry:.2f})"
         )
+        self._send_trend_breakeven_alert(trade, price)
+
+    def _send_trend_breakeven_alert(self, trade: ActiveTrade, price: float) -> None:
+        if self.telegram_bot is None:
+            return
+
+        try:
+            self.telegram_bot.send_trend_change_warning(
+                reply_to_message_id=trade.telegram_message_id,
+                open_time=trade.open_time,
+                direction=trade.direction,
+                current_price=price,
+                entry=trade.entry,
+            )
+        except Exception as exc:
+            safe_print(f"Telegram trend breakeven alert failed: {exc}")
+
+    def _check_structure_weakness(self, trade: ActiveTrade) -> None:
+        if self.structure_weakness_checker is None:
+            return
+
+        try:
+            assessment = self.structure_weakness_checker.analyze(
+                trade,
+                now_monotonic=time.monotonic(),
+            )
+        except Exception as exc:
+            safe_print(f"Structure weakness check failed for {trade.symbol}: {exc}")
+            return
+
+        if assessment is None or not assessment.should_warn or assessment.message is None:
+            return
+
+        trade.structure_warning_count += 1
+        self._notify_structure_weakness(trade, assessment.message)
+        self._persist_active_trades()
+
+    def _notify_structure_weakness(self, trade: ActiveTrade, message: str) -> None:
         safe_print()
         safe_print(message)
-        self._send_trend_warning(trade, price)
+        self._send_structure_weakness_warning(trade, message)
 
-    def _notify_trade_update_level1(self, trade: ActiveTrade, reasons: list[str]) -> None:
-        from telegram.message_format import format_trade_update_warning
+    def _fetch_candle(self, trade: ActiveTrade) -> dict[str, float]:
+        timeframe = trade.timeframe or "15m"
+        if self.candle_fetcher is not None:
+            return self.candle_fetcher(trade.symbol, timeframe)
 
-        message = format_trade_update_warning(trade.symbol, trade.direction, reasons)
-        safe_print()
-        safe_print(message)
-        self._send_trade_update_level1(trade, reasons)
+        price = self.price_fetcher(trade.symbol)
+        return {"high": price, "low": price, "close": price}
 
-    def _notify_high_risk_update(self, trade: ActiveTrade, reasons: list[str]) -> None:
-        from telegram.message_format import format_high_risk_update
-
-        message = format_high_risk_update(trade.symbol, trade.direction, reasons)
-        safe_print()
-        safe_print(message)
-        self._send_high_risk_update(trade, reasons)
-
-    def _evaluate_price(self, trade: ActiveTrade, price: float) -> None:
+    def _evaluate_candle(self, trade: ActiveTrade, high: float, low: float) -> None:
         if trade.direction == Direction.LONG:
-            self._evaluate_long(trade, price)
+            self._evaluate_long(trade, high, low)
         else:
-            self._evaluate_short(trade, price)
+            self._evaluate_short(trade, high, low)
 
-    def _evaluate_long(self, trade: ActiveTrade, price: float) -> None:
-        if price <= trade.stop_loss:
+    def _evaluate_long(self, trade: ActiveTrade, high: float, low: float) -> None:
+        if stop_loss_hit(
+            direction=Direction.LONG,
+            high=high,
+            low=low,
+            stop_loss=trade.stop_loss,
+        ):
             self._finalize_stop_loss(trade)
             return
 
-        if not trade.tp1_hit and price >= trade.tp1:
+        if not trade.tp1_hit and take_profit_hit(
+            direction=Direction.LONG,
+            high=high,
+            low=low,
+            tp_price=trade.tp1,
+        ):
             trade.tp1_hit = True
             trade.stop_loss = trade.entry
             self._notify(trade, "tp1")
@@ -418,7 +515,12 @@ class TradeMonitor:
         if trade.closed:
             return
 
-        if not trade.tp2_hit and price >= trade.tp2:
+        if not trade.tp2_hit and take_profit_hit(
+            direction=Direction.LONG,
+            high=high,
+            low=low,
+            tp_price=trade.tp2,
+        ):
             trade.tp2_hit = True
             trade.stop_loss = trade.tp1
             self._notify(trade, "tp2")
@@ -426,16 +528,31 @@ class TradeMonitor:
         if trade.closed:
             return
 
-        if price >= trade.tp3:
+        if take_profit_hit(
+            direction=Direction.LONG,
+            high=high,
+            low=low,
+            tp_price=trade.tp3,
+        ):
             trade.tp3_hit = True
             self._finalize(trade, "tp3")
 
-    def _evaluate_short(self, trade: ActiveTrade, price: float) -> None:
-        if price >= trade.stop_loss:
+    def _evaluate_short(self, trade: ActiveTrade, high: float, low: float) -> None:
+        if stop_loss_hit(
+            direction=Direction.SHORT,
+            high=high,
+            low=low,
+            stop_loss=trade.stop_loss,
+        ):
             self._finalize_stop_loss(trade)
             return
 
-        if not trade.tp1_hit and price <= trade.tp1:
+        if not trade.tp1_hit and take_profit_hit(
+            direction=Direction.SHORT,
+            high=high,
+            low=low,
+            tp_price=trade.tp1,
+        ):
             trade.tp1_hit = True
             trade.stop_loss = trade.entry
             self._notify(trade, "tp1")
@@ -443,7 +560,12 @@ class TradeMonitor:
         if trade.closed:
             return
 
-        if not trade.tp2_hit and price <= trade.tp2:
+        if not trade.tp2_hit and take_profit_hit(
+            direction=Direction.SHORT,
+            high=high,
+            low=low,
+            tp_price=trade.tp2,
+        ):
             trade.tp2_hit = True
             trade.stop_loss = trade.tp1
             self._notify(trade, "tp2")
@@ -451,7 +573,12 @@ class TradeMonitor:
         if trade.closed:
             return
 
-        if price <= trade.tp3:
+        if take_profit_hit(
+            direction=Direction.SHORT,
+            high=high,
+            low=low,
+            tp_price=trade.tp3,
+        ):
             trade.tp3_hit = True
             self._finalize(trade, "tp3")
 
@@ -464,6 +591,11 @@ class TradeMonitor:
         self._send_telegram(trade, event)
 
     def _finalize_stop_loss(self, trade: ActiveTrade) -> None:
+        from strategy.trend_breakeven_alert import sl_at_or_better_than_breakeven
+
+        if sl_at_or_better_than_breakeven(trade):
+            self._finalize(trade, "breakeven")
+            return
         self._finalize(trade, "stop_loss")
 
     def _finalize(self, trade: ActiveTrade, result: str) -> None:
@@ -482,6 +614,16 @@ class TradeMonitor:
                 if trade.sl_reply_sent:
                     return
                 self.telegram_bot.send_stop_loss_reply(
+                    trade,
+                    reply_to_message_id=reply_to,
+                )
+                trade.sl_reply_sent = True
+                return
+
+            if event == "breakeven":
+                if trade.sl_reply_sent:
+                    return
+                self.telegram_bot.send_breakeven_reply(
                     trade,
                     reply_to_message_id=reply_to,
                 )
@@ -510,23 +652,21 @@ class TradeMonitor:
         except Exception as exc:
             safe_print(f"Telegram update failed: {exc}")
 
-    def _send_trend_warning(
+    def _send_structure_weakness_warning(
         self,
         trade: ActiveTrade,
-        price: float,
+        message: str,
     ) -> None:
         if self.telegram_bot is None:
             return
 
         try:
-            self.telegram_bot.send_trend_change_warning(
+            self.telegram_bot.send_structure_weakness_warning(
+                message,
                 reply_to_message_id=trade.telegram_message_id,
-                open_time=trade.open_time,
-                direction=trade.direction,
-                current_price=price,
             )
         except Exception as exc:
-            safe_print(f"Telegram trend warning failed: {exc}")
+            safe_print(f"Telegram structure weakness warning failed: {exc}")
 
     def _send_sl_proximity_warning(
         self,
@@ -545,32 +685,6 @@ class TradeMonitor:
             )
         except Exception as exc:
             safe_print(f"Telegram SL proximity warning failed: {exc}")
-
-    def _send_trade_update_level1(self, trade: ActiveTrade, reasons: list[str]) -> None:
-        if self.telegram_bot is None:
-            return
-
-        try:
-            self.telegram_bot.send_trade_update_warning(
-                trade.symbol,
-                trade.direction,
-                reasons,
-            )
-        except Exception as exc:
-            safe_print(f"Telegram trade update failed: {exc}")
-
-    def _send_high_risk_update(self, trade: ActiveTrade, reasons: list[str]) -> None:
-        if self.telegram_bot is None:
-            return
-
-        try:
-            self.telegram_bot.send_high_risk_update(
-                trade.symbol,
-                trade.direction,
-                reasons,
-            )
-        except Exception as exc:
-            safe_print(f"Telegram high-risk update failed: {exc}")
 
     def _close_trade(self, trade: ActiveTrade) -> None:
         if trade.recorded:

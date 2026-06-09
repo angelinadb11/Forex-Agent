@@ -33,6 +33,39 @@ BEARISH_ANALYSIS_PHRASES = (
     "Market structure favors shorts.",
 )
 
+SCALP_BULLISH_PHRASES = (
+    "Ліквідність підтверджена.",
+    "Структура бичача.",
+    "Покупці активні після свіпу.",
+    "Імпульс залишається вгору.",
+)
+
+SCALP_BEARISH_PHRASES = (
+    "Ліквідність підтверджена.",
+    "Структура ведмежа.",
+    "Продавці активні після свіпу.",
+    "Імпульс залишається вниз.",
+)
+
+
+def _append_warnings(lines: list[str], *warnings: str | None) -> None:
+    for warning in warnings:
+        if warning:
+            lines.extend(["", warning])
+
+
+def format_scalp_direction_label(direction: Direction) -> str:
+    if direction == Direction.LONG:
+        return "КУПИТИ"
+    if direction == Direction.SHORT:
+        return "ПРОДАТИ"
+    return direction.value.upper()
+
+
+def summarize_scalp_analysis_sentences(direction: Direction) -> list[str]:
+    pool = SCALP_BULLISH_PHRASES if direction == Direction.LONG else SCALP_BEARISH_PHRASES
+    return random.sample(pool, min(2, len(pool)))
+
 
 def select_analysis_phrases(direction: Direction, *, count: int | None = None) -> list[str]:
     """Return 1-2 varied analysis sentences for the trade direction."""
@@ -51,12 +84,48 @@ def summarize_analysis_sentences(
     return select_analysis_phrases(direction)
 
 
+def format_scalp_trade_signal(
+    symbol: str,
+    signal: TradeSignal,
+    results: dict[str, AgentResult] | None = None,
+    news_warning: str | None = None,
+    off_hours_warning: str | None = None,
+    h4_mismatch_warning: str | None = None,
+) -> str:
+    direction = resolve_signal_direction(signal)
+    direction_label = format_scalp_direction_label(direction)
+    analysis = summarize_scalp_analysis_sentences(direction)
+    risk = abs(signal.entry - signal.stop_loss)
+    tp1_r = abs(signal.tp1 - signal.entry) / risk if risk else 0.0
+    tp2_r = abs(signal.tp2 - signal.entry) / risk if risk else 0.0
+
+    lines = [
+        "⚡ СКАЛЬП",
+        "",
+        f"{symbol} {direction_label}",
+        "",
+        f"Вхід: {signal.entry:.2f}",
+        f"Стоп: {signal.stop_loss:.2f}",
+        "",
+        f"✅ ТП1: {signal.tp1:.2f} ({tp1_r:.0f}R)",
+        f"✅ ТП2: {signal.tp2:.2f} ({tp2_r:.0f}R)",
+        "",
+        "ТФ: 5хв",
+        "",
+        *analysis,
+    ]
+    _append_warnings(lines, off_hours_warning, h4_mismatch_warning, news_warning)
+    return "\n".join(lines)
+
+
 def format_trade_signal(
     symbol: str,
     signal: TradeSignal,
     timeframe: str,
     results: dict[str, AgentResult] | None = None,
     news_warning: str | None = None,
+    off_hours_warning: str | None = None,
+    h4_mismatch_warning: str | None = None,
 ) -> str:
     direction = resolve_signal_direction(signal)
     direction_label = direction.value.upper()
@@ -76,23 +145,40 @@ def format_trade_signal(
         "",
         *analysis,
     ]
-    if news_warning:
-        lines.extend(["", news_warning])
+    _append_warnings(lines, off_hours_warning, h4_mismatch_warning, news_warning)
     return "\n".join(lines)
 
 
 def format_trade_result(symbol: str, direction: Direction, event: str) -> str:
-    """Format a TP or stop-loss result message for Telegram."""
+    """Format a TP, breakeven, or stop-loss result message for Telegram."""
     direction_label = direction.value.upper()
     event_formats = {
         "tp1": ("TP1:", "✅ TP1 HIT"),
         "tp2": ("TP2:", "✅✅ TP2 HIT"),
         "tp3": ("TP3:", "✅✅✅ TP3 HIT 🔥"),
         "stop_loss": ("Stop loss:", "🔴 STOP LOSS HIT"),
+        "breakeven": ("Breakeven:", "⚪ BREAKEVEN"),
     }
 
     label, headline = event_formats[event]
     return f"{label}\n{headline}\n\n{symbol} {direction_label}"
+
+
+def format_breakeven_reply(
+    *,
+    direction: Direction,
+    entry: float,
+    exit_price: float,
+) -> str:
+    direction_label = format_trade_direction_label(direction)
+    return "\n".join(
+        [
+            "⚪ Вийшли на беззбитку",
+            f"└ Сигнал: {direction_label} {entry:.2f}",
+            f"└ Закрито на точці входу: {exit_price:.2f}",
+            "└ Результат: 0R — без збитку 👌",
+        ]
+    )
 
 
 def format_trade_update(symbol: str, direction: Direction, event: str) -> str:
@@ -159,21 +245,28 @@ def format_trend_change_warning(
     open_time: str,
     direction: Direction,
     current_price: float,
-    reason: str = "Різка зміна тренду на H1",
+    entry: float | None = None,
+    reason: str = "Зміна тренду H1 проти позиції",
 ) -> str:
-    return "\n".join(
+    lines = [
+        "⚠️ УВАГА — Зміна тренду",
+        f"└ Причина: {reason}",
+        f"└ Поточна ціна: {current_price:.2f}",
+        "└ TP1 ще не досягнуто",
+    ]
+    if entry is not None:
+        lines.append(f"└ Точка входу: {entry:.2f}")
+    lines.extend(
         [
-            "⚠️ УВАГА — Зміна тренду",
-            f"└ Причина: {reason}",
-            f"└ Поточна ціна: {current_price:.2f}",
             "",
             "📌 Що робити зараз:",
-            "• Якщо ти в плюсі — закрий позицію вручну",
-            "• Якщо SL ще не перенесено на entry —",
-            "  зроби це зараз",
+            "• Перенеси SL на точку входу (беззбиток)",
+            "  — тоді при відкаті не буде мінуса",
             "• Не додавай до позиції",
+            "• Чекай TP1/TP2 або вихід по беззбитку",
         ]
     )
+    return "\n".join(lines)
 
 
 def format_sl_proximity_warning(
@@ -236,9 +329,10 @@ def format_take_profit_reply(
                 f"└ Хід: +{move_pips:.1f} pips",
                 "",
                 "📌 Що робити зараз:",
-                f"• Перенеси SL на точку входу {entry:.2f}",
+                "• Закрий 50% позиції на TP1",
+                f"• Перенеси SL на точку входу {entry:.2f} для решти 50%",
                 f"• Решта позиції йде до TP2: {tp2:.2f}",
-                "• Ти вже в безризиковій угоді 🎯",
+                "• Ти вже зафіксував частину прибутку 🎯",
             ]
         )
 
@@ -250,9 +344,9 @@ def format_take_profit_reply(
                 f"└ Хід: +{move_pips:.1f} pips",
                 "",
                 "📌 Що робити зараз:",
-                "• Закрий 50% позиції або всю",
-                f"• Якщо тримаєш — перенеси SL на TP1: {tp1:.2f}",
-                f"• До TP3: {tp3:.2f}",
+                "• Закрий ще 25% позиції",
+                f"• Перенеси SL на TP1: {tp1:.2f} для останніх 25%",
+                f"• Решта позиції йде до TP3: {tp3:.2f}",
             ]
         )
 
@@ -309,6 +403,8 @@ def format_agent_summary(results: dict[str, AgentResult]) -> str:
     labels = {
         "smc": "SMC",
         "liquidity": "Liquidity",
+        "fvg": "FVG",
+        "order_block": "Order Block",
         "rsi": "RSI",
         "session": "Session",
     }

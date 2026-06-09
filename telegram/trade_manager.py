@@ -6,7 +6,7 @@ from agents.base import AgentResult
 from signal_generator import TradeSignal
 from tracking.console import safe_print
 from tracking.trade_history import TradeHistoryStore, TradeStatisticsCalculator
-from tracking.trade_monitor import ActiveTrade, TradeMonitor
+from tracking.trade_monitor import ActiveTrade, CandleFetcher, TradeMonitor
 
 if TYPE_CHECKING:
     from telegram.telegram_bot import TelegramBot
@@ -27,6 +27,7 @@ class TelegramTradeManager:
         poll_interval: float = DEFAULT_POLL_INTERVAL,
         history_store: TradeHistoryStore | None = None,
         context_fetcher: ContextFetcher | None = None,
+        candle_fetcher: CandleFetcher | None = None,
     ) -> None:
         from telegram.telegram_bot import TelegramBot as Bot
 
@@ -37,6 +38,7 @@ class TelegramTradeManager:
         self.stats_calculator = TradeStatisticsCalculator()
         self.monitor = TradeMonitor(
             price_fetcher=price_fetcher,
+            candle_fetcher=candle_fetcher,
             history_store=self.history_store,
             stats_calculator=self.stats_calculator,
             telegram_bot=self.telegram_bot,
@@ -50,6 +52,7 @@ class TelegramTradeManager:
         price_fetcher: PriceFetcher,
         poll_interval: float = DEFAULT_POLL_INTERVAL,
         context_fetcher: ContextFetcher | None = None,
+        candle_fetcher: CandleFetcher | None = None,
     ) -> TelegramTradeManager | None:
         from telegram.telegram_bot import TelegramBot
 
@@ -58,6 +61,7 @@ class TelegramTradeManager:
             return None
         return cls(
             price_fetcher=price_fetcher,
+            candle_fetcher=candle_fetcher,
             telegram_bot=bot,
             poll_interval=poll_interval,
             context_fetcher=context_fetcher,
@@ -72,15 +76,21 @@ class TelegramTradeManager:
         agent_results: dict[str, AgentResult] | None = None,
         agents_agreement: str = "No",
         news_warning: str | None = None,
+        off_hours_warning: str | None = None,
+        h4_mismatch_warning: str | None = None,
+        context: dict | None = None,
     ) -> ActiveTrade:
         """Send the trade signal to Telegram and store it as active."""
+        message_id: int | None = None
         if self.telegram_bot is not None:
-            self.telegram_bot.send_trade_signal(
+            message_id = self.telegram_bot.send_trade_signal(
                 symbol,
                 signal,
                 timeframe=timeframe,
                 agent_results=agent_results,
                 news_warning=news_warning,
+                off_hours_warning=off_hours_warning,
+                h4_mismatch_warning=h4_mismatch_warning,
             )
 
         trade = ActiveTrade.from_signal(
@@ -89,9 +99,40 @@ class TelegramTradeManager:
             agents_agreement=agents_agreement,
             timeframe=timeframe,
             entry_agent_results=agent_results,
+            telegram_message_id=message_id,
         )
         self.active_trades.append(trade)
-        self.monitor.active_trades.append(trade)
+        self.monitor.register_trade(trade, context=context)
+        return trade
+
+    def publish_scalp_signal(
+        self,
+        symbol: str,
+        signal: TradeSignal,
+        *,
+        agent_results: dict[str, AgentResult] | None = None,
+        agents_agreement: str = "No",
+        context: dict | None = None,
+    ) -> ActiveTrade:
+        """Send a scalp signal to Telegram and store it as active."""
+        message_id: int | None = None
+        if self.telegram_bot is not None:
+            message_id = self.telegram_bot.send_scalp_trade_signal(
+                symbol,
+                signal,
+                agent_results=agent_results,
+            )
+
+        trade = ActiveTrade.from_signal(
+            symbol,
+            signal,
+            agents_agreement=agents_agreement,
+            timeframe="5m",
+            entry_agent_results=agent_results,
+            telegram_message_id=message_id,
+        )
+        self.active_trades.append(trade)
+        self.monitor.register_trade(trade, context=context)
         return trade
 
     def monitor_trade(

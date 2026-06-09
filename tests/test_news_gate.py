@@ -118,6 +118,7 @@ class SignalFilterNewsTests(unittest.TestCase):
             "liquidity": AgentResult(Direction.LONG, 0.35, "liquidity"),
             "rsi": AgentResult(Direction.LONG, 0.10, "rsi"),
             "session": AgentResult(Direction.NEUTRAL, 0.30, "session"),
+            "trend_filter": AgentResult(Direction.LONG, 0.80, "bullish H1"),
         }
         result = SignalFilter(news_gate=gate).evaluate(
             agents,
@@ -155,6 +156,7 @@ class SignalFilterNewsTests(unittest.TestCase):
             "liquidity": AgentResult(Direction.LONG, 0.35, "liquidity"),
             "rsi": AgentResult(Direction.LONG, 0.10, "rsi"),
             "session": AgentResult(Direction.NEUTRAL, 0.30, "session"),
+            "trend_filter": AgentResult(Direction.LONG, 0.80, "bullish H1"),
         }
         result = SignalFilter(news_gate=gate).evaluate(
             agents,

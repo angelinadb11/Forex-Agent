@@ -15,6 +15,7 @@ from strategy.runner import (
     compute_final_decision,
     format_agents_agreement,
     run_agents,
+    slice_candles_as_of,
 )
 from strategy.signal_filter import SignalFilter
 
@@ -120,17 +121,24 @@ class BacktestEngine:
     def _simulate_trades(self, candles: list[dict[str, float]]) -> list[SimulatedTradeResult]:
         trades: list[SimulatedTradeResult] = []
         open_until_index = -1
+        h1_candles = self.market_data.get_historical_market_data(
+            self.config.symbol,
+            "1h",
+            max(self.config.total_candles, 250),
+        )
 
         for index in range(self.config.warmup_candles, len(candles) - 1):
             if index <= open_until_index:
                 continue
 
             history = candles[: index + 1]
+            timestamp = candle_timestamp(candles, index)
             context = build_context(
                 symbol=self.symbol_def.display,
                 candles=history,
                 timeframe=self.config.timeframe,
-                timestamp=candle_timestamp(candles, index),
+                timestamp=timestamp,
+                h1_candles=slice_candles_as_of(h1_candles, timestamp),
             )
 
             agent_results = run_agents(context)
@@ -146,16 +154,16 @@ class BacktestEngine:
             if not filter_result.approved:
                 continue
 
-            try:
-                signal = self.signal_generator.generate(
-                    context,
-                    filter_result.direction,
-                    filter_result.confidence,
-                    build_signal_reason(agent_results, filter_result.direction),
-                )
-            except ValueError:
+            generation = self.signal_generator.generate(
+                context,
+                filter_result.direction,
+                filter_result.confidence,
+                build_signal_reason(agent_results, filter_result.direction),
+            )
+            if generation.signal is None:
                 continue
 
+            signal = generation.signal
             future = candles[index + 1 :]
             simulated = self.simulator.simulate(signal, future, entry_index=index)
             if simulated is None:

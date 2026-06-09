@@ -81,14 +81,24 @@ class MarketDataProvider:
         symbol: str,
         timeframe: str,
         limit: int = DEFAULT_LIMIT,
+        *,
+        include_h1_trend: bool = True,
+        h1_limit: int = 250,
+        include_h4_trend: bool = True,
+        h4_limit: int = 250,
     ) -> dict[str, Any]:
         snapshot = self.fetch_snapshot(symbol, timeframe, limit)
-        return {
+        context: dict[str, Any] = {
             "symbol": snapshot.symbol,
             "timestamp": snapshot.timestamp,
             "candles": snapshot.candles,
             "metadata": snapshot.metadata,
         }
+        if include_h1_trend:
+            context["h1_candles"] = self.get_market_data(symbol, "1h", h1_limit)
+        if include_h4_trend:
+            context["h4_candles"] = self.get_market_data(symbol, "4h", h4_limit)
+        return context
 
     def data_source(self, symbol: str) -> str:
         _, provider = self._resolve_provider(symbol)
@@ -123,7 +133,7 @@ class MarketDataProvider:
         return provider.get_market_data(
             symbol_def.data_symbol,
             timeframe,
-            min(total_candles, DEFAULT_LIMIT),
+            total_candles,
         )
 
     def _resolve_provider(self, symbol: str) -> tuple[SymbolDefinition, BaseDataProvider]:

@@ -24,7 +24,6 @@ from strategy.scalp_mode import (
     SCALP_TIMEFRAME,
     ScalpPublishGate,
     evaluate_scalp_direction_alignment,
-    is_scalp_enabled,
     passes_scalp_confidence,
 )
 from tracking.console import configure_console_encoding
@@ -87,8 +86,6 @@ def scan_scalp_setups(
     m15_candles: list,
     h1_candles: list,
     progress_every: int = PROGRESS_EVERY,
-    progress_template: str = "Оброблено {processed}/{total} M5 свічок...",
-    progress_finish: str = "Сканування завершено.",
 ) -> tuple[list[ScalpSetup], ScalpBacktestStats]:
     display = resolve_symbol(symbol).display
     generator = SignalGenerator()
@@ -103,8 +100,8 @@ def scan_scalp_setups(
         scan_start,
         scan_end,
         update_every=progress_every,
-        message_template=progress_template,
-        finish_message=progress_finish,
+        message_template="Оброблено {processed}/{total} M5 свічок...",
+        finish_message="Сканування завершено.",
     )
 
     for index in range(scan_start, scan_end):
@@ -198,48 +195,27 @@ def simulate_scalp_setups(
     return trades
 
 
-def run_symbol_scalp_light_backtest(
-    symbol: str,
-    *,
-    verbose: bool = True,
-    progress_every: int = PROGRESS_EVERY,
-) -> ScalpBacktestStats:
+def run_xauusd_scalp_light_backtest() -> ScalpBacktestStats:
+    symbol = "XAUUSD"
     display = resolve_symbol(symbol).display
-    if not is_scalp_enabled(display):
-        if verbose:
-            print(f"\n=== {display} SCALP (M5) — disabled ===", flush=True)
-        return ScalpBacktestStats()
-
     provider = MarketDataProvider()
 
-    if verbose:
-        print(f"\n=== {display} SCALP (M5) ===", flush=True)
-        print(f"Завантаження {display} M5 x{M5_NEEDED}...", flush=True)
+    print(f"Завантаження {display} M5 x{M5_NEEDED}...", flush=True)
     m5_candles = provider.get_historical_market_data(display, "5m", M5_NEEDED)
-    if verbose:
-        print(f"Завантаження {display} M15 x{M15_BUFFER}...", flush=True)
+    print(f"Завантаження {display} M15 x{M15_BUFFER}...", flush=True)
     m15_candles = provider.get_historical_market_data(display, "15m", M15_BUFFER)
-    if verbose:
-        print(f"Завантаження {display} H1 x{H1_BUFFER}...", flush=True)
+    print(f"Завантаження {display} H1 x{H1_BUFFER}...", flush=True)
     h1_candles = provider.get_historical_market_data(display, "1h", H1_BUFFER)
 
     m5_window = slice_m5_window(m5_candles, scan_candles=LIGHT_SCAN_CANDLES)
-    progress_prefix = f"[{display} M5] "
     setups, stats = scan_scalp_setups(
         symbol=display,
         m5_candles=m5_window,
         m15_candles=m15_candles,
         h1_candles=h1_candles,
-        progress_every=progress_every,
-        progress_template=progress_prefix + "Оброблено {processed}/{total}...",
-        progress_finish=progress_prefix + "Сканування завершено.",
     )
     stats.trades = simulate_scalp_setups(setups, m5_window)
     return stats
-
-
-def run_xauusd_scalp_light_backtest() -> ScalpBacktestStats:
-    return run_symbol_scalp_light_backtest("XAUUSD")
 
 
 def print_report(stats: ScalpBacktestStats) -> None:

@@ -1,6 +1,7 @@
 import argparse
 import logging
 
+from agents.base import AgentResult
 from agents.zone_helpers import ZoneCatalog
 from config import SUPPORTED_SYMBOLS, SUPPORTED_TIMEFRAMES, load_settings, resolve_symbol, resolve_symbols, resolve_timeframe
 from config.logging_config import setup_logging

@@ -13,6 +13,18 @@ INDEX_SYMBOLS: dict[str, dict[str, str]] = {
         "yahoo_ticker": "^DJI",
         "name": "Dow Jones Industrial Average",
     },
+    "NAS100": {
+        "yahoo_ticker": "^NDX",
+        "name": "Nasdaq 100",
+    },
+    "EURUSD": {
+        "yahoo_ticker": "EURUSD=X",
+        "name": "Euro / US Dollar",
+    },
+    "GBPUSD": {
+        "yahoo_ticker": "GBPUSD=X",
+        "name": "British Pound / US Dollar",
+    },
 }
 
 TIMEFRAME_RANGE: dict[str, str] = {

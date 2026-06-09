@@ -1,6 +1,6 @@
 {
   "symbol": "BTCUSDT",
-  "symbols": ["BTCUSDT", "XAUUSD", "DJ30"],
+  "symbols": ["BTCUSDT", "XAUUSD", "DJ30", "NAS100"],
   "timeframe": "15m",
   "candle_limit": 500,
   "london_ny_session_symbols": ["XAUUSD", "BTCUSDT"],
@@ -16,6 +16,6 @@
     "signal_cooldown_minutes": 60,
     "duplicate_entry_tolerance_pct": 0.001
   },
-  "_supported_symbols": ["BTCUSDT", "XAUUSD", "DJ30"],
+  "_supported_symbols": ["BTCUSDT", "XAUUSD", "DJ30", "NAS100", "EURUSD", "GBPUSD"],
   "_supported_timeframes": ["1m", "5m", "15m"]
 }

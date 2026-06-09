@@ -27,7 +27,7 @@ class Settings:
 
     project_name: str = "smc-ai-trading-agent"
     symbol: str = "BTCUSDT"
-    symbols: tuple[str, ...] = ("BTCUSDT", "XAUUSD", "DJ30")
+    symbols: tuple[str, ...] = ("BTCUSDT", "XAUUSD", "DJ30", "NAS100")
     timeframe: str = "15m"
     candle_limit: int = 500
     london_ny_session_symbols: frozenset[str] = frozenset()

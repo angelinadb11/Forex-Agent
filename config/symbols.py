@@ -10,7 +10,7 @@ CONFIG_FILE = CONFIG_DIR / "config.json"
 
 DEFAULT_CONFIG = {
     "symbol": "BTCUSDT",
-    "symbols": ["BTCUSDT", "XAUUSD", "DJ30"],
+    "symbols": ["BTCUSDT", "XAUUSD", "DJ30", "NAS100"],
     "timeframe": "15m",
     "candle_limit": 500,
     "london_ny_session_symbols": [],
@@ -33,12 +33,16 @@ SYMBOL_DEFINITIONS: dict[str, SymbolDefinition] = {
     "XAUUSDT": SymbolDefinition("XAUUSD", "XAUUSDT", "binance"),
     "DJ30": SymbolDefinition("DJ30", "DJ30", "index"),
     "US30": SymbolDefinition("DJ30", "DJ30", "index"),
+    "NAS100": SymbolDefinition("NAS100", "NAS100", "index"),
+    "US100": SymbolDefinition("NAS100", "NAS100", "index"),
+    "EURUSD": SymbolDefinition("EURUSD", "EURUSD", "index"),
+    "GBPUSD": SymbolDefinition("GBPUSD", "GBPUSD", "index"),
 }
 
-SUPPORTED_SYMBOLS = ("BTCUSDT", "XAUUSD", "DJ30")
-DEFAULT_SYMBOLS = ("BTCUSDT", "XAUUSD", "DJ30")
+SUPPORTED_SYMBOLS = ("BTCUSDT", "XAUUSD", "DJ30", "NAS100", "EURUSD", "GBPUSD")
+DEFAULT_SYMBOLS = ("BTCUSDT", "XAUUSD", "DJ30", "NAS100")
 SUPPORTED_TIMEFRAMES = ("1m", "5m", "15m", "1h", "4h")
-SYMBOL_ALIASES = ("US30", "XAUUSDT")
+SYMBOL_ALIASES = ("US30", "XAUUSDT", "US100")
 
 
 def resolve_symbol(symbol: str) -> SymbolDefinition:

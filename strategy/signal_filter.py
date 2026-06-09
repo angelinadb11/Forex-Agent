@@ -14,6 +14,7 @@ from agents.session_agent import is_london_or_new_york_session
 from agents.smc_agent import smc_result_has_structure_conflict
 from agents.zone_helpers import price_in_active_entry_zone
 from config.symbols import resolve_symbol
+from strategy.bollinger_gate import evaluate_bb_gate
 from news.models import NewsAction
 from strategy.decision_config import DecisionConfig, LEGACY_DECISION_CONFIG
 from strategy.runner import (
@@ -49,6 +50,7 @@ class FilterProfile:
     block_smc_structure_conflict: bool = False
     use_zone_cluster: bool = False
     use_rsi_gate: bool = False
+    use_bb_gate: bool = False
     h4_soft_mode: bool = False
     disabled_symbols: frozenset[str] = frozenset()
 
@@ -161,6 +163,7 @@ class SignalFilter:
         block_smc_structure_conflict: bool = False,
         use_zone_cluster: bool = False,
         use_rsi_gate: bool = False,
+        use_bb_gate: bool = False,
         h4_soft_mode: bool = False,
     ) -> None:
         self.min_confidence = min_confidence
@@ -175,6 +178,7 @@ class SignalFilter:
         self.block_smc_structure_conflict = block_smc_structure_conflict
         self.use_zone_cluster = use_zone_cluster
         self.use_rsi_gate = use_rsi_gate
+        self.use_bb_gate = use_bb_gate
         self.h4_soft_mode = h4_soft_mode
 
     @property
@@ -195,6 +199,7 @@ class SignalFilter:
             block_smc_structure_conflict=profile.block_smc_structure_conflict,
             use_zone_cluster=profile.use_zone_cluster,
             use_rsi_gate=profile.use_rsi_gate,
+            use_bb_gate=profile.use_bb_gate,
             h4_soft_mode=profile.h4_soft_mode,
             **kwargs,
         )
@@ -294,6 +299,16 @@ class SignalFilter:
                     direction=final_direction,
                     confidence=final_confidence,
                     message=rsi_block,
+                )
+
+        if self.use_bb_gate:
+            bb_block = evaluate_bb_gate(context, final_direction)
+            if bb_block is not None:
+                return FilterResult(
+                    approved=False,
+                    direction=final_direction,
+                    confidence=final_confidence,
+                    message=bb_block,
                 )
 
         if self.block_smc_structure_conflict:

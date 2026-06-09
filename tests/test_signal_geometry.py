@@ -22,13 +22,13 @@ class SignalGeometryTests(unittest.TestCase):
     def test_telegram_header_matches_long_geometry(self):
         signal = TradeSignal(Direction.LONG, 100.0, 90.0, 110.0, 120.0, 130.0, 0.75, "test")
         message = format_trade_signal("BTCUSDT", signal, "15m", None)
-        self.assertTrue(message.startswith("BTCUSDT LONG"))
+        self.assertTrue(message.startswith("BTCUSDT ЛОНГ"))
         self.assertEqual(resolve_signal_direction(signal), Direction.LONG)
 
     def test_telegram_header_matches_short_geometry(self):
         signal = TradeSignal(Direction.SHORT, 100.0, 110.0, 90.0, 80.0, 70.0, 0.75, "test")
         message = format_trade_signal("BTCUSDT", signal, "15m", None)
-        self.assertTrue(message.startswith("BTCUSDT SHORT"))
+        self.assertTrue(message.startswith("BTCUSDT ШОРТ"))
         self.assertEqual(resolve_signal_direction(signal), Direction.SHORT)
 
     def test_validate_long_levels(self):

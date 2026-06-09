@@ -25,6 +25,24 @@ SYMBOL_SL_CONFIG_RAW: dict[str, dict[str, float]] = {
         "pip_value": 1.0,
         "lot_per_100": 0.01,
     },
+    "NAS100": {
+        "min_sl_pips": 40,
+        "max_sl_pips": 300,
+        "pip_value": 1.0,
+        "lot_per_100": 0.01,
+    },
+    "EURUSD": {
+        "min_sl_pips": 8,
+        "max_sl_pips": 50,
+        "pip_value": 0.0001,
+        "lot_per_100": 0.01,
+    },
+    "GBPUSD": {
+        "min_sl_pips": 10,
+        "max_sl_pips": 60,
+        "pip_value": 0.0001,
+        "lot_per_100": 0.01,
+    },
 }
 
 # Dollar P/L per pip at 1.0 lot (used for Telegram result formatting).
@@ -32,6 +50,9 @@ PIP_DOLLAR_VALUE_PER_LOT: dict[str, float] = {
     "XAUUSD": 10.0,
     "DJ30": 1.0,
     "BTCUSDT": 1.0,
+    "NAS100": 1.0,
+    "EURUSD": 10.0,
+    "GBPUSD": 10.0,
 }
 
 

@@ -222,7 +222,6 @@ class BotRuntime:
             signal, context, scalp_result = self.analyze_scalp_fn(
                 symbol,
                 provider=self.provider,
-                signal_generator=self.signal_generator,
             )
             if signal is None or scalp_result is None:
                 if scalp_result is not None and scalp_result.message:

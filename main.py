@@ -299,12 +299,12 @@ def build_bot_runtime(
 
     scalp_publish_gate = ScalpPublishGate()
 
-    def analyze_scalp(symbol: str, **kwargs):
+    def analyze_scalp(symbol: str, *, provider):
         return analyze_scalp_symbol(
             symbol,
+            provider=provider,
             signal_generator=signal_generator,
             publish_gate=scalp_publish_gate,
-            **kwargs,
         )
 
     return BotRuntime(

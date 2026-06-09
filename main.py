@@ -20,7 +20,12 @@ from strategy import (
 )
 from runtime.m15_reversal_block import M15ReversalBlockGate
 from strategy.scalp_mode import ScalpPublishGate, analyze_scalp_symbol
-from strategy.signal_filter import MIN_CONFIDENCE, MIN_CONFIDENCE_PCT
+from strategy.signal_filter import (
+    FILTER_PROFILE_D,
+    MIN_CONFIDENCE,
+    MIN_CONFIDENCE_PCT,
+    profile_symbols,
+)
 from tracking import TradeMonitor, print_trade_signal
 from tracking.console import safe_print, configure_console_encoding
 from telegram import TelegramBot, TelegramTradeManager
@@ -247,7 +252,8 @@ def build_bot_runtime(
     scan_interval: float,
 ) -> BotRuntime:
     provider = MarketDataProvider()
-    signal_filter = SignalFilter(
+    signal_filter = SignalFilter.from_profile(
+        FILTER_PROFILE_D,
         london_ny_session_symbols=settings.london_ny_session_symbols,
         session_confidence_symbols=settings.session_confidence_symbols,
         news_gate=build_news_gate(
@@ -338,9 +344,16 @@ def main() -> None:
     args = parse_args(settings)
 
     symbols = resolve_runtime_symbols(settings, args)
+    enabled_symbols = profile_symbols(FILTER_PROFILE_D, symbols)
     timeframe = resolve_timeframe(args.timeframe)
 
     logger = setup_logging(settings)
+    if enabled_symbols != symbols:
+        disabled = set(symbols) - set(enabled_symbols)
+        logger.info(
+            "Profile D: disabled symbols skipped: %s", ", ".join(sorted(disabled))
+        )
+    symbols = enabled_symbols
     logger.info("Analyzing symbols: %s", ", ".join(symbols))
 
     runtime = build_bot_runtime(

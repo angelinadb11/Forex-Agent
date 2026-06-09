@@ -125,14 +125,24 @@ class ActiveTrade:
         if risk == 0 or self.result is None:
             return 0.0
 
-        if self.result == "tp3":
-            exit_price = self.tp3
-        else:
-            exit_price = self.stop_loss
+        def signed_r(price: float) -> float:
+            if self.direction == Direction.LONG:
+                return (price - self.entry) / risk
+            return (self.entry - price) / risk
 
-        if self.direction == Direction.LONG:
-            return (exit_price - self.entry) / risk
-        return (self.entry - exit_price) / risk
+        if not self.tp1_hit:
+            exit_price = self.tp3 if self.result == "tp3" else self.stop_loss
+            return signed_r(exit_price)
+
+        # Partial management: 50% closed at TP1, 25% at TP2, 25% runner.
+        total = 0.5 * signed_r(self.tp1)
+        if self.tp2_hit:
+            total += 0.25 * signed_r(self.tp2)
+            final_exit = self.tp3 if self.result == "tp3" else self.stop_loss
+            total += 0.25 * signed_r(final_exit)
+        else:
+            total += 0.5 * signed_r(self.stop_loss)
+        return total
 
     def to_record(self) -> TradeRecord:
         return TradeRecord(
@@ -719,10 +729,16 @@ class TradeMonitor:
             if event == "breakeven":
                 if trade.sl_reply_sent:
                     return
-                self.telegram_bot.send_breakeven_reply(
-                    trade,
-                    reply_to_message_id=reply_to,
-                )
+                if trade.tp1_hit:
+                    self.telegram_bot.send_post_tp_close_reply(
+                        trade,
+                        reply_to_message_id=reply_to,
+                    )
+                else:
+                    self.telegram_bot.send_breakeven_reply(
+                        trade,
+                        reply_to_message_id=reply_to,
+                    )
                 trade.sl_reply_sent = True
                 return
 

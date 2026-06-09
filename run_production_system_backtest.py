@@ -1,8 +1,9 @@
 """Backtest of the LIVE production configuration.
 
-Mirrors main.py: default SignalFilter (H4/H1 alignment + entry zone +
-London/NY session gate for configured symbols), partial 50/25/25 management
-with near-TP1 BE and the M15 reversal block, across production symbols.
+Mirrors main.py: Profile D SignalFilter (zone cluster, RSI gate, SMC
+conflict block, H4/H1 alignment, entry zone, London/NY session gate),
+partial 50/25/25 management with near-TP1 BE and the M15 reversal block,
+across production symbols (BTCUSDT disabled by Profile D).
 News gate is omitted (no historical news data).
 """
 
@@ -22,7 +23,7 @@ from run_xauusd_30d_backtest import (
     LocalDataBacktestEngine,
     candle_timestamp,
 )
-from strategy.signal_filter import SignalFilter
+from strategy.signal_filter import FILTER_PROFILE_D, SignalFilter, profile_symbols
 from tracking.console import configure_console_encoding
 
 
@@ -36,7 +37,8 @@ def run_symbol(
     print(f"\n=== {display} | діюча конфігурація ===", flush=True)
 
     m15_candles, h1_candles, h4_candles = load_symbol_data(display)
-    signal_filter = SignalFilter(
+    signal_filter = SignalFilter.from_profile(
+        FILTER_PROFILE_D,
         london_ny_session_symbols=london_ny_session_symbols,
         session_confidence_symbols=session_confidence_symbols,
     )
@@ -81,12 +83,12 @@ def run_symbol(
 def main() -> None:
     configure_console_encoding()
     settings = load_settings()
-    symbols = settings.symbols
+    symbols = profile_symbols(FILTER_PROFILE_D, settings.symbols)
 
     print("=== Бектест діючої продакшн-системи (500 M15) ===")
-    print(f"Символи: {', '.join(symbols)}")
+    print(f"Символи: {', '.join(symbols)} (Profile D, BTCUSDT вимкнений)")
     print(
-        "Фільтр: дефолтний (H4/H1 + зона входу"
+        "Фільтр: Profile D (zone cluster + RSI gate + SMC conflict + H4/H1 + зона входу"
         + (
             f" + сесії London/NY для {', '.join(sorted(settings.london_ny_session_symbols))}"
             if settings.london_ny_session_symbols

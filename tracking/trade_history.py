@@ -118,7 +118,11 @@ class TradeStatisticsCalculator:
         stop_losses = sum(
             1 for trade in closed if is_full_stop_loss_record(trade)
         )
-        breakeven_exits = sum(1 for trade in closed if trade.result == "breakeven")
+        breakeven_exits = sum(
+            1
+            for trade in closed
+            if trade.result == "breakeven" and not trade.tp1_hit
+        )
 
         return TradeStatistics(
             total_trades=total,

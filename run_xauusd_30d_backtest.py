@@ -148,7 +148,12 @@ class BacktestRunStats:
 
     @property
     def breakeven_exits(self) -> int:
-        return sum(1 for trade in self.trades if trade.result == "breakeven")
+        """Pure 0R exits: stop at entry before TP1. After-TP1 closes are wins."""
+        return sum(
+            1
+            for trade in self.trades
+            if trade.result == "breakeven" and not trade.tp1_hit
+        )
 
     @property
     def avg_r_per_trade(self) -> float:

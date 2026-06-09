@@ -450,6 +450,24 @@ class TelegramBot:
         )
         return self.send_trade_reply(message, reply_to_message_id=reply_to_message_id)
 
+    def send_post_tp_close_reply(
+        self,
+        trade,
+        *,
+        reply_to_message_id: int | None,
+    ) -> int:
+        from telegram.message_format import format_post_tp_close_reply
+
+        highest_tp = 2 if trade.tp2_hit else 1
+        message = format_post_tp_close_reply(
+            direction=trade.direction,
+            entry=trade.entry,
+            exit_price=trade.stop_loss,
+            highest_tp=highest_tp,
+            locked_r=trade.profit_loss_r(),
+        )
+        return self.send_trade_reply(message, reply_to_message_id=reply_to_message_id)
+
     def send_take_profit_reply(
         self,
         trade,

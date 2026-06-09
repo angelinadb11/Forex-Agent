@@ -214,6 +214,26 @@ def format_breakeven_reply(
     )
 
 
+def format_post_tp_close_reply(
+    *,
+    direction: Direction,
+    entry: float,
+    exit_price: float,
+    highest_tp: int,
+    locked_r: float,
+) -> str:
+    """Remainder stopped out after TP1/TP2 was taken — profit is locked, not BE."""
+    direction_label = format_trade_direction_label(direction)
+    return "\n".join(
+        [
+            f"✅ Угоду закрито з прибутком (ТП{highest_tp} взято)",
+            f"└ Сигнал: {direction_label} {entry:.2f}",
+            f"└ Решту позиції закрито: {exit_price:.2f}",
+            f"└ Результат: {locked_r:+.2f}R 🎯",
+        ]
+    )
+
+
 def format_trade_update(symbol: str, direction: Direction, event: str) -> str:
     """Format a trade monitor update for TP/SL events."""
     return format_trade_result(symbol, direction, event)

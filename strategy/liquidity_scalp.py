@@ -48,7 +48,10 @@ MIN_CANDLES = 60
 H1_TREND_EMA_PERIOD = 50
 
 LIQUIDITY_SCALP_MAX_SIGNALS_PER_DAY = 6
-LIQUIDITY_SCALP_MIN_INTERVAL_SECONDS = 900
+# 5 minutes between signals: after a fast stop/BE the next setup is allowed
+# within ~2-3 minutes of the close (the gate counts from signal time, and an
+# open trade blocks the slot anyway).
+LIQUIDITY_SCALP_MIN_INTERVAL_SECONDS = 300
 
 
 STOCH_RSI_PERIOD = 14

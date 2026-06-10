@@ -67,6 +67,34 @@ class LiquidityScalpStats:
         )
 
     @property
+    def tp2_full_wins(self) -> int:
+        return sum(1 for trade in self.trades if trade.tp2_hit)
+
+    @property
+    def tp1_then_be(self) -> int:
+        return sum(
+            1
+            for trade in self.trades
+            if trade.tp1_hit and not trade.tp2_hit and trade.result == "breakeven"
+        )
+
+    @property
+    def other_exits(self) -> int:
+        return (
+            self.total_signals
+            - self.tp2_full_wins
+            - self.tp1_then_be
+            - self.full_stops
+            - self.breakeven_exits
+        )
+
+    @property
+    def avg_duration_candles(self) -> float:
+        if not self.trades:
+            return 0.0
+        return sum(t.exit_index - t.entry_index for t in self.trades) / len(self.trades)
+
+    @property
     def total_r(self) -> float:
         return sum(trade.pnl_r for trade in self.trades)
 
@@ -169,12 +197,12 @@ def period_days(stats: LiquidityScalpStats) -> float:
 def print_report(stats: LiquidityScalpStats) -> None:
     days = period_days(stats)
     print()
-    print("=== Liquidity Scalp Backtest (XAUUSD, M5) ===")
+    print("=== Liquidity Scalp Backtest (XAUUSD) ===")
     print(
-        "Sweep equal lows/highs + reclaim | SL за хвіст + ATR-буфер (10-40 pips) | "
-        "TP1=1R (50%), TP2=ліквідність/2R"
+        "Sweep equal lows/highs + reclaim | SL за хвіст + ATR-буфер | "
+        "TP1=1R (50%, стоп у БЕ), TP2=ліквідність/2R"
     )
-    print("Сесії London/NY | макс 6/день | мін 30 хв між сигналами")
+    print("Сесії London/NY (ліміти гейта і SL — у конфігу вище)")
     if stats.period_start:
         print(f"Період: {stats.period_start[:16]} -> {stats.period_end[:16]} (~{days:.1f} днів)")
     print()
@@ -190,8 +218,15 @@ def print_report(stats: LiquidityScalpStats) -> None:
             f"Win rate (TP1):         {stats.tp1_wins}/{stats.total_signals} "
             f"({stats.win_rate:.1f}%)"
         )
-    print(f"Повних стопів (-1R):    {stats.full_stops}")
-    print(f"Беззбитків (0R):        {stats.breakeven_exits}")
+    print()
+    print(f"  ТП1 + ТП2 (повний):   {stats.tp2_full_wins} (+1.5R кожна)")
+    print(f"  ТП1 -> БЕ (решта):    {stats.tp1_then_be} (+0.5R кожна)")
+    print(f"  Повний стоп (-1R):    {stats.full_stops}")
+    print(f"  БЕ до ТП1 (0R):       {stats.breakeven_exits}")
+    if stats.other_exits:
+        print(f"  Інші виходи:          {stats.other_exits}")
+    print()
+    print(f"Середня тривалість:     {stats.avg_duration_candles:.0f} свічок")
     print(f"Total R:                {stats.total_r:+.2f}R")
     if stats.total_signals:
         print(f"Середнє на угоду:       {stats.total_r / stats.total_signals:+.2f}R")

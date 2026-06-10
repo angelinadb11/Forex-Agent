@@ -278,6 +278,7 @@ def main() -> None:
     parser.add_argument("--ha", action="store_true", help="require Heiken Ashi confirm")
     parser.add_argument("--volume", type=float, default=None, help="min volume ratio")
     parser.add_argument("--stoch", action="store_true", help="require Stoch RSI extreme")
+    parser.add_argument("--bb", action="store_true", help="require sweep wick beyond Bollinger Band")
     parser.add_argument("--tf", default="5m", choices=["1m", "5m"], help="timeframe")
     parser.add_argument("--candles", type=int, default=None, help="scan candles")
     parser.add_argument("--interval-min", type=int, default=30, help="min gap, minutes")
@@ -300,6 +301,7 @@ def main() -> None:
         or args.ha
         or args.volume is not None
         or args.stoch
+        or args.bb
         or args.sl_min is not None
         or args.sl_max is not None
     )
@@ -315,6 +317,7 @@ def main() -> None:
             require_volume_spike=args.volume is not None,
             min_volume_ratio=args.volume if args.volume is not None else 1.5,
             require_stoch_rsi=args.stoch,
+            require_bollinger=args.bb,
             min_sl_pips=args.sl_min if args.sl_min is not None else default.min_sl_pips,
             max_sl_pips=args.sl_max if args.sl_max is not None else default.max_sl_pips,
         )

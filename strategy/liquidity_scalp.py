@@ -26,7 +26,8 @@ from strategy.scalp_mode import ScalpAnalysisResult, ScalpPublishGate
 from tracking.trade_pnl import pip_size_for_symbol
 
 # Production config selected by backtest (17 days M1 XAUUSD):
-# volume >=1.3x + Stoch RSI extreme -> +7.18R, 57 trades, WR 52.6%.
+# volume >=1.5x + Stoch RSI extreme -> +15.35R, 51 trades, WR 58.8%,
+# 30 wins vs 21 full stops (5-min signal gap).
 LIQUIDITY_SCALP_TIMEFRAME = "1m"
 LIQUIDITY_SCALP_SYMBOLS = frozenset({"XAUUSD"})
 LIQUIDITY_SCALP_CANDLE_LIMIT = 300
@@ -73,13 +74,14 @@ class LiquidityScalpConfig:
     require_volume_spike: bool = False
     min_volume_ratio: float = 1.5
     require_stoch_rsi: bool = False
+    require_bollinger: bool = False
     min_sl_pips: float = MIN_SL_PIPS
     max_sl_pips: float = MAX_SL_PIPS
 
 
 DEFAULT_LIQUIDITY_SCALP_CONFIG = LiquidityScalpConfig(
     require_volume_spike=True,
-    min_volume_ratio=1.3,
+    min_volume_ratio=1.5,
     require_stoch_rsi=True,
 )
 
@@ -379,6 +381,27 @@ def detect_liquidity_sweep_setup(
         if sweep_direction == Direction.SHORT and k < STOCH_RSI_OVERBOUGHT:
             return None, (
                 f"NO SCALP: Stoch RSI {k:.0f} not overbought (>={STOCH_RSI_OVERBOUGHT:.0f})"
+            )
+
+    if config.require_bollinger:
+        import pandas as pd
+
+        from strategy.bollinger_gate import calculate_bollinger_bands
+
+        closes = pd.Series([float(c["close"]) for c in candles], dtype=float)
+        try:
+            bb_lower, _, bb_upper = calculate_bollinger_bands(closes)
+        except ValueError:
+            return None, "NO SCALP: Bollinger Bands unavailable"
+        if sweep_direction == Direction.LONG and float(candle["low"]) > bb_lower:
+            return None, (
+                f"NO SCALP: sweep wick {candle['low']:.2f} did not reach "
+                f"lower BB {bb_lower:.2f}"
+            )
+        if sweep_direction == Direction.SHORT and float(candle["high"]) < bb_upper:
+            return None, (
+                f"NO SCALP: sweep wick {candle['high']:.2f} did not reach "
+                f"upper BB {bb_upper:.2f}"
             )
 
     if long_pool is not None:

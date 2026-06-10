@@ -136,7 +136,7 @@ class ScalpModeTests(unittest.TestCase):
         self.assertIn("Стоп: 2648.50", message)
         self.assertIn("✅ ТП1: 2652.50 (1R)", message)
         self.assertIn("✅ ТП2: 2654.50 (2R)", message)
-        self.assertIn("ТФ: 5хв", message)
+        self.assertIn("ТФ: 5 хв", message)
         self.assertNotIn("TP3", message)
         self.assertNotIn("Entry:", message)
 

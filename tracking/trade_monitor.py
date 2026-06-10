@@ -181,6 +181,7 @@ class TradeMonitor:
         near_tp1_breakeven_checker: NearTp1BreakevenChecker | None = None,
         m15_reversal_block: M15ReversalBlockGate | None = None,
         candle_fetcher: CandleFetcher | None = None,
+        active_trades_store=None,
     ) -> None:
         self.price_fetcher = price_fetcher
         self.candle_fetcher = candle_fetcher
@@ -213,7 +214,9 @@ class TradeMonitor:
         self.m15_reversal_block = m15_reversal_block
         from tracking.active_trades_store import ActiveTradesStore
 
-        self.active_trades_store = ActiveTradesStore()
+        self.active_trades_store = (
+            active_trades_store if active_trades_store is not None else ActiveTradesStore()
+        )
         self.active_trades = self.active_trades_store.load()
 
     def register_trade(

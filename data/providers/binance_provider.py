@@ -119,6 +119,7 @@ class BinanceProvider(BaseDataProvider):
             "high": float(raw[2]),
             "low": float(raw[3]),
             "close": float(raw[4]),
+            "volume": float(raw[5]),
         }
 
     def get_current_price(self, symbol: str) -> float:

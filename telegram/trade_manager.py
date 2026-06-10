@@ -29,6 +29,7 @@ class TelegramTradeManager:
         context_fetcher: ContextFetcher | None = None,
         candle_fetcher: CandleFetcher | None = None,
         m15_reversal_block=None,
+        active_trades_store=None,
     ) -> None:
         from telegram.telegram_bot import TelegramBot as Bot
 
@@ -45,6 +46,7 @@ class TelegramTradeManager:
             telegram_bot=self.telegram_bot,
             context_fetcher=context_fetcher,
             m15_reversal_block=m15_reversal_block,
+            active_trades_store=active_trades_store,
         )
         self.active_trades: list[ActiveTrade] = []
 
@@ -115,6 +117,7 @@ class TelegramTradeManager:
         agent_results: dict[str, AgentResult] | None = None,
         agents_agreement: str = "No",
         context: dict | None = None,
+        timeframe: str = "5m",
     ) -> ActiveTrade:
         """Send a scalp signal to Telegram and store it as active."""
         message_id: int | None = None
@@ -123,13 +126,14 @@ class TelegramTradeManager:
                 symbol,
                 signal,
                 agent_results=agent_results,
+                timeframe=timeframe,
             )
 
         trade = ActiveTrade.from_signal(
             symbol,
             signal,
             agents_agreement=agents_agreement,
-            timeframe="5m",
+            timeframe=timeframe,
             entry_agent_results=agent_results,
             telegram_message_id=message_id,
         )

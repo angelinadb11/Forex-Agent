@@ -86,6 +86,15 @@ def load_telegram_credentials() -> tuple[str, str]:
     return token, chat_id
 
 
+def load_scalp_telegram_credentials() -> tuple[str, str]:
+    """Load credentials of the dedicated scalp Telegram bot/channel."""
+    load_dotenv(PROJECT_ROOT / ".env")
+
+    token = os.getenv("TELEGRAM_SCALP_BOT_TOKEN", "").strip()
+    chat_id = os.getenv("TELEGRAM_SCALP_CHAT_ID", "").strip()
+    return token, chat_id
+
+
 def _telegram_get(token: str, endpoint: str, *, params: dict | None = None) -> dict:
     url = f"https://api.telegram.org/bot{token}/{endpoint}"
     try:
@@ -155,6 +164,14 @@ class TelegramBot:
     def from_env(cls) -> TelegramBot | None:
         """Create a bot from .env credentials, or None if not configured."""
         token, chat_id = load_telegram_credentials()
+        if not token or not chat_id:
+            return None
+        return cls(token=token, chat_id=chat_id)
+
+    @classmethod
+    def from_scalp_env(cls) -> TelegramBot | None:
+        """Create the dedicated scalp bot, or None if not configured."""
+        token, chat_id = load_scalp_telegram_credentials()
         if not token or not chat_id:
             return None
         return cls(token=token, chat_id=chat_id)
@@ -303,6 +320,7 @@ class TelegramBot:
         *,
         agent_results: dict[str, AgentResult] | None = None,
         news_warning: str | None = None,
+        timeframe: str = "5m",
     ) -> int:
         """Format and send a scalp trade signal."""
         message = build_scalp_trade_signal_message(
@@ -310,6 +328,7 @@ class TelegramBot:
             signal,
             agent_results,
             news_warning,
+            timeframe=timeframe,
         )
         return self.send_message(message)
 

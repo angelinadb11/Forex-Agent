@@ -91,6 +91,7 @@ def format_scalp_trade_signal(
     news_warning: str | None = None,
     off_hours_warning: str | None = None,
     h4_mismatch_warning: str | None = None,
+    timeframe: str = "5m",
 ) -> str:
     direction = resolve_signal_direction(signal)
     direction_label = format_scalp_direction_label(direction)
@@ -110,7 +111,7 @@ def format_scalp_trade_signal(
         f"✅ ТП1: {signal.tp1:.2f} ({tp1_r:.0f}R)",
         f"✅ ТП2: {signal.tp2:.2f} ({tp2_r:.0f}R)",
         "",
-        "ТФ: 5хв",
+        f"ТФ: {format_timeframe_label(timeframe)}",
         "",
         *analysis,
     ]

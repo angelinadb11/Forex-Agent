@@ -8,12 +8,11 @@ TP1=1.5R / TP2=2.5R / TP3=opposite liquidity.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Literal
 
 from agents.base import Direction
 from agents.liquidity_agent import _find_equal_levels, _find_swing_points
-from agents.session_agent import is_london_or_new_york_session
 from backtest.engine import candle_timestamp
 from config.symbols import resolve_symbol
 from data import MarketDataProvider
@@ -46,6 +45,20 @@ TURTLE_MAX_SIGNALS_PER_DAY = 5
 TURTLE_MIN_INTERVAL_SECONDS = 600
 
 VIP2_SIGNAL_TAG = "VIP2 Turtle Soup"
+VIP2_SESSION_START_HOUR = 8
+VIP2_SESSION_END_HOUR = 16
+ASIA_FLAT_END_HOUR = 6
+
+
+def is_vip2_core_session(current: datetime) -> bool:
+    """VIP2 quality window: 08:00-16:00 UTC, skip Asia flat (00:00-06:00)."""
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=timezone.utc)
+    else:
+        current = current.astimezone(timezone.utc)
+    if current.hour < ASIA_FLAT_END_HOUR:
+        return False
+    return VIP2_SESSION_START_HOUR <= current.hour < VIP2_SESSION_END_HOUR
 
 
 @dataclass(frozen=True)
@@ -330,8 +343,8 @@ def analyze_turtle_soup_scalp_symbol(
         include_h4_trend=False,
     )
     timestamp = context.get("timestamp")
-    if isinstance(timestamp, datetime) and not is_london_or_new_york_session(timestamp):
-        return rejected("NO VIP2: outside London/NY session", context)
+    if isinstance(timestamp, datetime) and not is_vip2_core_session(timestamp):
+        return rejected("NO VIP2: outside 08-16 UTC core session", context)
 
     setup, reason = detect_turtle_soup_setup(
         context.get("candles", []),

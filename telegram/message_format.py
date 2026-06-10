@@ -182,6 +182,7 @@ def format_turtle_soup_scalp_trade_signal(
         f"ТФ: {format_timeframe_label(timeframe)}",
         "",
         "Рівні: Азія / день / година / swing / пули",
+        "Сесія: 08:00–16:00 UTC (London core)",
         "Після ТП1 — перенеси стоп у беззбиток.",
     ]
     return "\n".join(lines)

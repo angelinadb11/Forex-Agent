@@ -3,10 +3,15 @@
 from __future__ import annotations
 
 import unittest
+from datetime import datetime, timezone
 
 from agents.base import Direction
 from signal_generator import TradeSignal
-from strategy.turtle_soup_scalp import VIP2_SIGNAL_TAG, detect_turtle_soup_setup
+from strategy.turtle_soup_scalp import (
+    VIP2_SIGNAL_TAG,
+    detect_turtle_soup_setup,
+    is_vip2_core_session,
+)
 from telegram.message_format import format_turtle_soup_scalp_trade_signal
 
 
@@ -39,6 +44,19 @@ class TurtleDetectionTests(unittest.TestCase):
         setup, reason = detect_turtle_soup_setup(candles, symbol="XAUUSD")
         self.assertIsNone(setup)
         self.assertIn("NO VIP2", reason)
+
+
+class Vip2SessionTests(unittest.TestCase):
+    def test_core_session_window(self) -> None:
+        self.assertTrue(
+            is_vip2_core_session(datetime(2026, 6, 10, 10, 0, tzinfo=timezone.utc))
+        )
+        self.assertFalse(
+            is_vip2_core_session(datetime(2026, 6, 10, 3, 0, tzinfo=timezone.utc))
+        )
+        self.assertFalse(
+            is_vip2_core_session(datetime(2026, 6, 10, 18, 0, tzinfo=timezone.utc))
+        )
 
 
 if __name__ == "__main__":

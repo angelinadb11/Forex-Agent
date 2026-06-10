@@ -24,6 +24,11 @@ from strategy.liquidity_scalp import (
     analyze_liquidity_scalp_symbol,
     build_liquidity_scalp_gate,
 )
+from strategy.sweep_fvg_scalp import (
+    SWEEP_FVG_TIMEFRAME,
+    analyze_sweep_fvg_scalp_symbol,
+    build_premium_scalp_gate,
+)
 from strategy.signal_filter import (
     FILTER_PROFILE_D,
     MIN_CONFIDENCE,
@@ -334,10 +339,14 @@ def build_bot_runtime(
 
     analyze_scalp = None
     publish_scalp_signal = None
+    analyze_premium_scalp = None
+    publish_premium_scalp_signal = None
     scalp_monitor = None
     scalp_dedup = None
+    premium_dedup = None
     if scalp_trade_manager is not None:
         liquidity_scalp_gate = build_liquidity_scalp_gate()
+        premium_scalp_gate = build_premium_scalp_gate()
 
         def analyze_scalp(symbol: str, *, provider):
             return analyze_liquidity_scalp_symbol(
@@ -346,13 +355,34 @@ def build_bot_runtime(
                 publish_gate=liquidity_scalp_gate,
             )
 
+        def analyze_premium_scalp(symbol: str, *, provider):
+            return analyze_sweep_fvg_scalp_symbol(
+                symbol,
+                provider=provider,
+                publish_gate=premium_scalp_gate,
+            )
+
         publish_scalp_signal = scalp_trade_manager.publish_scalp_signal
+        publish_premium_scalp_signal = scalp_trade_manager.publish_premium_scalp_signal
         scalp_monitor = scalp_trade_manager.monitor
         scalp_dedup = SignalDedupGate(
             duplicate_entry_tolerance_pct=settings.duplicate_entry_tolerance_pct,
             signal_cooldown_minutes=settings.signal_cooldown_minutes,
         )
-        scalp_dedup.seed_from_active_trades(scalp_monitor.active_trades)
+        scalp_dedup.seed_from_active_trades(
+            [t for t in scalp_monitor.active_trades if t.timeframe == LIQUIDITY_SCALP_TIMEFRAME]
+        )
+        premium_dedup = SignalDedupGate(
+            duplicate_entry_tolerance_pct=settings.duplicate_entry_tolerance_pct,
+            signal_cooldown_minutes=settings.signal_cooldown_minutes,
+        )
+        premium_dedup.seed_from_active_trades(
+            [t for t in scalp_monitor.active_trades if t.timeframe == SWEEP_FVG_TIMEFRAME]
+        )
+        logger.info(
+            "VIP premium Sweep+FVG stream enabled on %s (same scalp channel)",
+            SWEEP_FVG_TIMEFRAME,
+        )
 
     return BotRuntime(
         symbols=symbols,
@@ -371,9 +401,13 @@ def build_bot_runtime(
         publish_signal=publish_signal,
         analyze_scalp=analyze_scalp,
         publish_scalp_signal=publish_scalp_signal,
+        analyze_premium_scalp=analyze_premium_scalp,
+        publish_premium_scalp_signal=publish_premium_scalp_signal,
         scalp_monitor=scalp_monitor,
         scalp_dedup=scalp_dedup,
+        premium_dedup=premium_dedup,
         scalp_timeframe=LIQUIDITY_SCALP_TIMEFRAME,
+        premium_timeframe=SWEEP_FVG_TIMEFRAME,
     )
 
 

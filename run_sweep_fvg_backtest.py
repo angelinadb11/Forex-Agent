@@ -13,7 +13,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from typing import Literal
 
+from agents.liquidity_agent import _find_equal_levels, _find_swing_points
 from agents.session_agent import is_london_or_new_york_session
 from backtest.engine import candle_timestamp
 from backtest.progress import BacktestScanProgress
@@ -38,6 +40,19 @@ TP2_R = 2.0
 FILL_WINDOW_CANDLES = 30
 ASIA_START_HOUR = 0
 ASIA_END_HOUR = 8
+POOL_LOOKBACK = 240
+MIN_POOL_TOUCHES = 2
+SWING_LOOKBACK = 2
+EQUAL_TOLERANCE_PCT = 0.0008
+
+LevelMode = Literal["asia", "pools", "all"]
+
+
+@dataclass(frozen=True)
+class RefLevel:
+    price: float
+    kind: Literal["high", "low"]
+    label: str
 
 
 @dataclass
@@ -142,6 +157,62 @@ def prev_hour_range(
     return max(highs), min(lows)
 
 
+def liquidity_pool_levels(
+    candles: list,
+    index: int,
+    *,
+    lookback: int = POOL_LOOKBACK,
+) -> list[RefLevel]:
+    import pandas as pd
+
+    start = max(0, index - lookback)
+    window = candles[start:index]
+    if len(window) < 60:
+        return []
+
+    df = pd.DataFrame(
+        {
+            "open": [c["open"] for c in window],
+            "high": [c["high"] for c in window],
+            "low": [c["low"] for c in window],
+            "close": [c["close"] for c in window],
+        }
+    )
+    swing_highs, swing_lows = _find_swing_points(df, lookback=SWING_LOOKBACK)
+    equal_highs = _find_equal_levels(swing_highs, tolerance_pct=EQUAL_TOLERANCE_PCT)
+    equal_lows = _find_equal_levels(swing_lows, tolerance_pct=EQUAL_TOLERANCE_PCT)
+
+    levels: list[RefLevel] = []
+    for cluster in equal_highs:
+        if cluster.count >= MIN_POOL_TOUCHES:
+            levels.append(RefLevel(cluster.level, "high", f"pool-high x{cluster.count}"))
+    for cluster in equal_lows:
+        if cluster.count >= MIN_POOL_TOUCHES:
+            levels.append(RefLevel(cluster.level, "low", f"pool-low x{cluster.count}"))
+    return levels
+
+
+def reference_levels_for_bar(
+    candles: list,
+    timestamps: list[datetime],
+    index: int,
+    mode: LevelMode,
+) -> list[RefLevel]:
+    levels: list[RefLevel] = []
+    if mode in ("asia", "all"):
+        asia = asia_range_for_day(candles, timestamps, index)
+        if asia:
+            levels.append(RefLevel(asia[0], "high", "asia-high"))
+            levels.append(RefLevel(asia[1], "low", "asia-low"))
+        hour = prev_hour_range(candles, timestamps, index)
+        if hour:
+            levels.append(RefLevel(hour[0], "high", "hour-high"))
+            levels.append(RefLevel(hour[1], "low", "hour-low"))
+    if mode in ("pools", "all"):
+        levels.extend(liquidity_pool_levels(candles, index))
+    return levels
+
+
 @dataclass(frozen=True)
 class PendingOrder:
     signal_index: int
@@ -157,6 +228,8 @@ def detect_sweep_fvg(
     index: int,
     pip: float,
     stats: SweepFvgStats,
+    *,
+    level_mode: LevelMode = "asia",
 ) -> PendingOrder | None:
     """Detect at candle ``index`` (FVG confirm candle, sweep = index-1)."""
     if index < 3:
@@ -165,53 +238,55 @@ def detect_sweep_fvg(
     pre = candles[index - 2]
     confirm = candles[index]
 
-    levels: list[tuple[float, float]] = []  # (high_level, low_level)
-    asia = asia_range_for_day(candles, timestamps, index - 1)
-    if asia:
-        levels.append(asia)
-    hour = prev_hour_range(candles, timestamps, index - 1)
-    if hour:
-        levels.append(hour)
+    levels = reference_levels_for_bar(candles, timestamps, index - 1, level_mode)
     if not levels:
         stats.no_setup += 1
         return None
 
     min_pierce = MIN_PIERCE_PIPS * pip
     max_pierce = MAX_PIERCE_PIPS * pip
+    saw_sweep = False
+    saw_sweep_no_fvg = False
 
-    for level_high, level_low in levels:
-        # LONG: sweep below the low level, close back above it.
-        pierce = level_low - sweep["low"]
-        if (
-            min_pierce <= pierce <= max_pierce
-            and sweep["close"] > level_low
-            and pre["low"] >= level_low
-        ):
-            # Bullish FVG: confirm candle gaps above the pre-sweep candle.
+    for ref in levels:
+        if ref.kind == "low":
+            pierce = ref.price - sweep["low"]
+            if not (
+                min_pierce <= pierce <= max_pierce
+                and sweep["close"] > ref.price
+                and pre["low"] >= ref.price
+            ):
+                continue
+            saw_sweep = True
             if confirm["low"] > pre["high"]:
-                entry = confirm["low"]  # FVG upper edge (first retest touch)
+                entry = confirm["low"]
                 stop = sweep["low"] - STOP_BUFFER_PIPS * pip
                 if entry > stop:
-                    return PendingOrder(index, "long", entry, stop, level_low)
-            stats.no_fvg += 1
-            return None
+                    return PendingOrder(index, "long", entry, stop, ref.price)
+            saw_sweep_no_fvg = True
+            continue
 
-        # SHORT: sweep above the high level, close back below it.
-        pierce = sweep["high"] - level_high
-        if (
+        pierce = sweep["high"] - ref.price
+        if not (
             min_pierce <= pierce <= max_pierce
-            and sweep["close"] < level_high
-            and pre["high"] <= level_high
+            and sweep["close"] < ref.price
+            and pre["high"] <= ref.price
         ):
-            if confirm["high"] < pre["low"]:
-                entry = confirm["high"]  # FVG lower edge
-                stop = sweep["high"] + STOP_BUFFER_PIPS * pip
-                if entry < stop:
-                    return PendingOrder(index, "short", entry, stop, level_high)
-            stats.no_fvg += 1
-            return None
+            continue
+        saw_sweep = True
+        if confirm["high"] < pre["low"]:
+            entry = confirm["high"]
+            stop = sweep["high"] + STOP_BUFFER_PIPS * pip
+            if entry < stop:
+                return PendingOrder(index, "short", entry, stop, ref.price)
+        saw_sweep_no_fvg = True
 
-    stats.no_setup += 1
+    if saw_sweep_no_fvg:
+        stats.no_fvg += 1
+    elif saw_sweep:
+        stats.no_fvg += 1
+    else:
+        stats.no_setup += 1
     return None
 
 
@@ -274,6 +349,7 @@ def run(
     interval_min: int,
     max_day: int,
     fill_window: int,
+    level_mode: LevelMode = "asia",
 ) -> SweepFvgStats:
     display = resolve_symbol(symbol).display
     pip = pip_size_for_symbol(display) or 1.0
@@ -298,7 +374,9 @@ def run(
 
     for index in range(scan_start, scan_end):
         progress.update(index)
-        order = detect_sweep_fvg(candles, timestamps, index, pip, stats)
+        order = detect_sweep_fvg(
+            candles, timestamps, index, pip, stats, level_mode=level_mode
+        )
         if order is None:
             continue
 
@@ -343,12 +421,12 @@ def run(
     return stats
 
 
-def print_report(stats: SweepFvgStats, tf: str) -> None:
+def print_report(stats: SweepFvgStats, tf: str, level_mode: LevelMode) -> None:
     start = datetime.fromisoformat(stats.period_start)
     end = datetime.fromisoformat(stats.period_end)
     days = max((end - start).total_seconds() / 86_400, 0.01)
     print()
-    print(f"=== Sweep + FVG Backtest (XAUUSD, {tf}) ===")
+    print(f"=== Sweep + FVG Backtest (XAUUSD, {tf}, levels={level_mode}) ===")
     print("Рівні: Азія (00-08 UTC) + попередня година | sweep 5-60 піпс | вхід на FVG")
     print(f"Період: {stats.period_start[:16]} -> {stats.period_end[:16]} (~{days:.1f} днів)")
     print()
@@ -383,6 +461,7 @@ def main() -> None:
     parser.add_argument("--interval-min", type=int, default=5)
     parser.add_argument("--max-day", type=int, default=6)
     parser.add_argument("--fill-window", type=int, default=FILL_WINDOW_CANDLES)
+    parser.add_argument("--levels", default="asia", choices=["asia", "pools", "all"])
     args = parser.parse_args()
 
     symbol = "XAUUSD"
@@ -398,8 +477,9 @@ def main() -> None:
         interval_min=args.interval_min,
         max_day=args.max_day,
         fill_window=args.fill_window,
+        level_mode=args.levels,
     )
-    print_report(stats, args.tf)
+    print_report(stats, args.tf, args.levels)
 
 
 if __name__ == "__main__":

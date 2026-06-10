@@ -119,6 +119,39 @@ def format_scalp_trade_signal(
     return "\n".join(lines)
 
 
+def format_premium_scalp_trade_signal(
+    symbol: str,
+    signal: TradeSignal,
+    *,
+    timeframe: str = "5m",
+) -> str:
+    """VIP / Premium Sweep+FVG scalp signal."""
+    direction = resolve_signal_direction(signal)
+    direction_label = format_scalp_direction_label(direction)
+    risk = abs(signal.entry - signal.stop_loss)
+    tp1_r = abs(signal.tp1 - signal.entry) / risk if risk else 0.0
+    tp2_r = abs(signal.tp2 - signal.entry) / risk if risk else 0.0
+
+    lines = [
+        "⭐ VIP ПРЕМІUM",
+        "Sweep + FVG | ліміт на край FVG",
+        "",
+        f"{symbol} {direction_label}",
+        "",
+        f"Вхід (ліміт): {signal.entry:.2f}",
+        f"Стоп: {signal.stop_loss:.2f}",
+        "",
+        f"✅ ТП1: {signal.tp1:.2f} ({tp1_r:.0f}R) — закрити 50%, SL у вхід",
+        f"✅ ТП2: {signal.tp2:.2f} ({tp2_r:.0f}R)",
+        "",
+        f"ТФ: {format_timeframe_label(timeframe)}",
+        "",
+        "Рівні: Азія / година / пули ліквідності",
+        "Після ТП1 — перенеси стоп у беззбиток.",
+    ]
+    return "\n".join(lines)
+
+
 def format_trade_signal(
     symbol: str,
     signal: TradeSignal,

@@ -15,7 +15,8 @@ from strategy.signal_filter import FilterResult, SignalFilter
 from tracking.trade_monitor import ActiveTrade, TradeMonitor
 from tracking.console import safe_print
 
-from strategy.scalp_mode import SCALP_TIMEFRAME, analyze_scalp_symbol, is_scalp_enabled
+from strategy.scalp_mode import SCALP_TIMEFRAME, is_scalp_enabled
+from strategy.sweep_fvg_scalp import SWEEP_FVG_TIMEFRAME, is_sweep_fvg_scalp_enabled
 
 AnalyzeSymbolFn = Callable[
     ...,
@@ -25,6 +26,7 @@ AnalyzeScalpFn = Callable[..., tuple[TradeSignal | None, dict | None, object]]
 PublishScalpFn = Callable[..., ActiveTrade]
 
 DEFAULT_SCALP_SCAN_INTERVAL_SECONDS = 300.0
+DEFAULT_PREMIUM_SCAN_INTERVAL_SECONDS = 300.0
 
 
 class BotRuntime:
@@ -49,10 +51,15 @@ class BotRuntime:
         publish_signal: Callable[..., ActiveTrade] | None = None,
         analyze_scalp: AnalyzeScalpFn | None = None,
         publish_scalp_signal: PublishScalpFn | None = None,
+        analyze_premium_scalp: AnalyzeScalpFn | None = None,
+        publish_premium_scalp_signal: PublishScalpFn | None = None,
         scalp_monitor: TradeMonitor | None = None,
         scalp_dedup: SignalDedupGate | None = None,
+        premium_dedup: SignalDedupGate | None = None,
         scalp_timeframe: str = SCALP_TIMEFRAME,
+        premium_timeframe: str = SWEEP_FVG_TIMEFRAME,
         scalp_scan_interval_seconds: float = DEFAULT_SCALP_SCAN_INTERVAL_SECONDS,
+        premium_scan_interval_seconds: float = DEFAULT_PREMIUM_SCAN_INTERVAL_SECONDS,
         loop_sleep_seconds: float = 1.0,
     ) -> None:
         self.symbols = symbols
@@ -71,10 +78,15 @@ class BotRuntime:
         self.publish_signal_fn = publish_signal
         self.analyze_scalp_fn = analyze_scalp
         self.publish_scalp_signal_fn = publish_scalp_signal
+        self.analyze_premium_scalp_fn = analyze_premium_scalp
+        self.publish_premium_scalp_signal_fn = publish_premium_scalp_signal
         self.scalp_monitor = scalp_monitor
         self.scalp_dedup = scalp_dedup if scalp_dedup is not None else dedup
+        self.premium_dedup = premium_dedup
         self.scalp_timeframe = scalp_timeframe
+        self.premium_timeframe = premium_timeframe
         self.scalp_scan_interval_seconds = scalp_scan_interval_seconds
+        self.premium_scan_interval_seconds = premium_scan_interval_seconds
         self.loop_sleep_seconds = loop_sleep_seconds
 
     def run_forever(self) -> None:
@@ -90,15 +102,20 @@ class BotRuntime:
         safe_print(f"Poll interval: {self.poll_interval_seconds:.0f}s")
         safe_print(f"Scan interval: {self.scan_interval_seconds:.0f}s")
         safe_print(f"Scalp scan interval: {self.scalp_scan_interval_seconds:.0f}s")
+        if self.analyze_premium_scalp_fn is not None:
+            safe_print(f"VIP premium scan interval: {self.premium_scan_interval_seconds:.0f}s")
         safe_print("Press Ctrl+C to stop.")
         safe_print()
 
         self._scan_all_symbols()
         if self.analyze_scalp_fn is not None:
             self._scan_scalp_all_symbols()
+        if self.analyze_premium_scalp_fn is not None:
+            self._scan_premium_scalp_all_symbols()
         last_poll = 0.0
         last_scan = time.monotonic()
         last_scalp_scan = time.monotonic()
+        last_premium_scan = time.monotonic()
 
         try:
             while True:
@@ -118,6 +135,13 @@ class BotRuntime:
                 ):
                     self._scan_scalp_all_symbols()
                     last_scalp_scan = now
+
+                if (
+                    self.analyze_premium_scalp_fn is not None
+                    and now - last_premium_scan >= self.premium_scan_interval_seconds
+                ):
+                    self._scan_premium_scalp_all_symbols()
+                    last_premium_scan = now
 
                 time.sleep(self.loop_sleep_seconds)
         except KeyboardInterrupt:
@@ -160,12 +184,14 @@ class BotRuntime:
     def _open_trades(self) -> list[ActiveTrade]:
         return [trade for trade in self.monitor.active_trades if not trade.closed]
 
-    def _scalp_open_symbols(self) -> set[str]:
+    def _scalp_open_symbols(self, *, timeframe: str | None = None) -> set[str]:
         monitor = self.scalp_monitor if self.scalp_monitor is not None else self.monitor
+        trades = [trade for trade in monitor.active_trades if not trade.closed]
+        if timeframe is not None:
+            trades = [trade for trade in trades if trade.timeframe == timeframe]
         return {
             resolve_symbol(trade.symbol).display
-            for trade in monitor.active_trades
-            if not trade.closed
+            for trade in trades
         }
 
     def _tick_monitors(self) -> None:
@@ -248,7 +274,7 @@ class BotRuntime:
         if self.analyze_scalp_fn is None:
             return
 
-        open_symbols = self._scalp_open_symbols()
+        open_symbols = self._scalp_open_symbols(timeframe=self.scalp_timeframe)
         for symbol in self.symbols:
             display_symbol = resolve_symbol(symbol).display
             if not is_scalp_enabled(display_symbol):
@@ -274,7 +300,9 @@ class BotRuntime:
                 continue
 
             decision = self.scalp_dedup.can_publish(
-                symbol, signal, self._scalp_open_symbols()
+                symbol,
+                signal,
+                self._scalp_open_symbols(timeframe=self.scalp_timeframe),
             )
             if not decision.allowed:
                 self.logger.info(
@@ -337,6 +365,78 @@ class BotRuntime:
             agents_agreement=agents_agreement,
             timeframe=self.scalp_timeframe,
             entry_agent_results=m5_results,
+        )
+        monitor = self.scalp_monitor if self.scalp_monitor is not None else self.monitor
+        monitor.register_trade(trade, context=context)
+        return trade
+
+    def _scan_premium_scalp_all_symbols(self) -> None:
+        if self.analyze_premium_scalp_fn is None or self.premium_dedup is None:
+            return
+
+        open_symbols = self._scalp_open_symbols(timeframe=self.premium_timeframe)
+        for symbol in self.symbols:
+            display_symbol = resolve_symbol(symbol).display
+            if not is_sweep_fvg_scalp_enabled(display_symbol):
+                continue
+            if display_symbol in open_symbols:
+                self.logger.debug(
+                    "Skipping VIP scalp for %s: open premium trade already active",
+                    display_symbol,
+                )
+                continue
+
+            signal, context, premium_result = self.analyze_premium_scalp_fn(
+                symbol,
+                provider=self.provider,
+            )
+            if signal is None or premium_result is None:
+                if premium_result is not None and premium_result.message:
+                    self.logger.debug(
+                        "VIP scalp skipped for %s: %s",
+                        display_symbol,
+                        premium_result.message,
+                    )
+                continue
+
+            decision = self.premium_dedup.can_publish(
+                symbol,
+                signal,
+                self._scalp_open_symbols(timeframe=self.premium_timeframe),
+            )
+            if not decision.allowed:
+                self.logger.info(
+                    "VIP scalp skipped for %s: %s",
+                    display_symbol,
+                    decision.reason,
+                )
+                continue
+
+            self._publish_premium_scalp_trade(symbol, signal, context=context)
+            self.premium_dedup.record_published(symbol, signal)
+            self.logger.info("VIP premium scalp published for %s", display_symbol)
+
+    def _publish_premium_scalp_trade(
+        self,
+        symbol: str,
+        signal: TradeSignal,
+        *,
+        context: dict | None,
+    ) -> ActiveTrade:
+        if self.publish_premium_scalp_signal_fn is not None:
+            return self.publish_premium_scalp_signal_fn(
+                symbol,
+                signal,
+                context=context,
+                timeframe=self.premium_timeframe,
+            )
+
+        trade = ActiveTrade.from_signal(
+            symbol,
+            signal,
+            agents_agreement="VIP",
+            timeframe=self.premium_timeframe,
+            entry_agent_results=None,
         )
         monitor = self.scalp_monitor if self.scalp_monitor is not None else self.monitor
         monitor.register_trade(trade, context=context)

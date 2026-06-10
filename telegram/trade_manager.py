@@ -141,6 +141,35 @@ class TelegramTradeManager:
         self.monitor.register_trade(trade, context=context)
         return trade
 
+    def publish_premium_scalp_signal(
+        self,
+        symbol: str,
+        signal: TradeSignal,
+        *,
+        context: dict | None = None,
+        timeframe: str = "5m",
+    ) -> ActiveTrade:
+        """Send a VIP premium scalp signal to Telegram and store it as active."""
+        message_id: int | None = None
+        if self.telegram_bot is not None:
+            message_id = self.telegram_bot.send_premium_scalp_trade_signal(
+                symbol,
+                signal,
+                timeframe=timeframe,
+            )
+
+        trade = ActiveTrade.from_signal(
+            symbol,
+            signal,
+            agents_agreement="VIP",
+            timeframe=timeframe,
+            entry_agent_results=None,
+            telegram_message_id=message_id,
+        )
+        self.active_trades.append(trade)
+        self.monitor.register_trade(trade, context=context)
+        return trade
+
     def monitor_trade(
         self,
         trade: ActiveTrade,

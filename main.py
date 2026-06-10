@@ -29,6 +29,11 @@ from strategy.sweep_fvg_scalp import (
     analyze_sweep_fvg_scalp_symbol,
     build_premium_scalp_gate,
 )
+from strategy.turtle_soup_scalp import (
+    TURTLE_SOUP_TIMEFRAME,
+    analyze_turtle_soup_scalp_symbol,
+    build_turtle_soup_gate,
+)
 from strategy.signal_filter import (
     FILTER_PROFILE_D,
     MIN_CONFIDENCE,
@@ -319,11 +324,23 @@ def build_bot_runtime(
 
     # Liquidity scalp stream: separate Telegram bot/channel and separate stores.
     scalp_telegram_bot = TelegramBot.from_scalp_env()
+
+    def resolve_scalp_market_timeframe(timeframe: str) -> str:
+        if timeframe.startswith("5m"):
+            return "5m"
+        if timeframe.startswith("1m"):
+            return "1m"
+        return timeframe
+
     scalp_trade_manager = None
     if scalp_telegram_bot is not None:
         scalp_trade_manager = TelegramTradeManager(
             price_fetcher=lambda symbol: provider.get_current_price(symbol),
-            candle_fetcher=lambda symbol, tf: provider.get_market_data(symbol, tf, limit=1)[-1],
+            candle_fetcher=lambda symbol, tf: provider.get_market_data(
+                symbol,
+                resolve_scalp_market_timeframe(tf),
+                limit=1,
+            )[-1],
             telegram_bot=scalp_telegram_bot,
             poll_interval=poll_interval,
             context_fetcher=context_fetcher,
@@ -341,12 +358,16 @@ def build_bot_runtime(
     publish_scalp_signal = None
     analyze_premium_scalp = None
     publish_premium_scalp_signal = None
+    analyze_turtle_soup_scalp = None
+    publish_turtle_soup_scalp_signal = None
     scalp_monitor = None
     scalp_dedup = None
     premium_dedup = None
+    turtle_dedup = None
     if scalp_trade_manager is not None:
         liquidity_scalp_gate = build_liquidity_scalp_gate()
         premium_scalp_gate = build_premium_scalp_gate()
+        turtle_soup_gate = build_turtle_soup_gate()
 
         def analyze_scalp(symbol: str, *, provider):
             return analyze_liquidity_scalp_symbol(
@@ -362,8 +383,16 @@ def build_bot_runtime(
                 publish_gate=premium_scalp_gate,
             )
 
+        def analyze_turtle_soup_scalp(symbol: str, *, provider):
+            return analyze_turtle_soup_scalp_symbol(
+                symbol,
+                provider=provider,
+                publish_gate=turtle_soup_gate,
+            )
+
         publish_scalp_signal = scalp_trade_manager.publish_scalp_signal
         publish_premium_scalp_signal = scalp_trade_manager.publish_premium_scalp_signal
+        publish_turtle_soup_scalp_signal = scalp_trade_manager.publish_turtle_soup_scalp_signal
         scalp_monitor = scalp_trade_manager.monitor
         scalp_dedup = SignalDedupGate(
             duplicate_entry_tolerance_pct=settings.duplicate_entry_tolerance_pct,
@@ -379,9 +408,20 @@ def build_bot_runtime(
         premium_dedup.seed_from_active_trades(
             [t for t in scalp_monitor.active_trades if t.timeframe == SWEEP_FVG_TIMEFRAME]
         )
+        turtle_dedup = SignalDedupGate(
+            duplicate_entry_tolerance_pct=settings.duplicate_entry_tolerance_pct,
+            signal_cooldown_minutes=settings.signal_cooldown_minutes,
+        )
+        turtle_dedup.seed_from_active_trades(
+            [t for t in scalp_monitor.active_trades if t.timeframe == TURTLE_SOUP_TIMEFRAME]
+        )
         logger.info(
             "VIP premium Sweep+FVG stream enabled on %s (same scalp channel)",
             SWEEP_FVG_TIMEFRAME,
+        )
+        logger.info(
+            "VIP2 Turtle Soup stream enabled on %s (same scalp channel)",
+            TURTLE_SOUP_TIMEFRAME,
         )
 
     return BotRuntime(
@@ -403,11 +443,15 @@ def build_bot_runtime(
         publish_scalp_signal=publish_scalp_signal,
         analyze_premium_scalp=analyze_premium_scalp,
         publish_premium_scalp_signal=publish_premium_scalp_signal,
+        analyze_turtle_soup_scalp=analyze_turtle_soup_scalp,
+        publish_turtle_soup_scalp_signal=publish_turtle_soup_scalp_signal,
         scalp_monitor=scalp_monitor,
         scalp_dedup=scalp_dedup,
         premium_dedup=premium_dedup,
+        turtle_dedup=turtle_dedup,
         scalp_timeframe=LIQUIDITY_SCALP_TIMEFRAME,
         premium_timeframe=SWEEP_FVG_TIMEFRAME,
+        turtle_timeframe=TURTLE_SOUP_TIMEFRAME,
     )
 
 

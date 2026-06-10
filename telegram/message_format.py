@@ -152,6 +152,41 @@ def format_premium_scalp_trade_signal(
     return "\n".join(lines)
 
 
+def format_turtle_soup_scalp_trade_signal(
+    symbol: str,
+    signal: TradeSignal,
+    *,
+    timeframe: str = "5m",
+) -> str:
+    """VIP 2 — ICT Turtle Soup scalp signal."""
+    direction = resolve_signal_direction(signal)
+    direction_label = format_scalp_direction_label(direction)
+    risk = abs(signal.entry - signal.stop_loss)
+    tp1_r = abs(signal.tp1 - signal.entry) / risk if risk else 0.0
+    tp2_r = abs(signal.tp2 - signal.entry) / risk if risk else 0.0
+    tp3_r = abs(signal.tp3 - signal.entry) / risk if risk else 0.0
+
+    lines = [
+        "🐢 VIP 2 — TURTLE SOUP",
+        "ICT failed breakout | вхід на close sweep-свічки",
+        "",
+        f"{symbol} {direction_label}",
+        "",
+        f"Вхід: {signal.entry:.2f}",
+        f"Стоп: {signal.stop_loss:.2f}",
+        "",
+        f"✅ ТП1: {signal.tp1:.2f} ({tp1_r:.1f}R) — закрити 50%, SL у вхід",
+        f"✅ ТП2: {signal.tp2:.2f} ({tp2_r:.1f}R)",
+        f"✅ ТП3: {signal.tp3:.2f} ({tp3_r:.1f}R) — ліквідність",
+        "",
+        f"ТФ: {format_timeframe_label(timeframe)}",
+        "",
+        "Рівні: Азія / день / година / swing / пули",
+        "Після ТП1 — перенеси стоп у беззбиток.",
+    ]
+    return "\n".join(lines)
+
+
 def format_trade_signal(
     symbol: str,
     signal: TradeSignal,
@@ -330,9 +365,11 @@ def format_open_time_label(open_time: str) -> str:
 
 
 def format_timeframe_label(timeframe: str) -> str:
+    if timeframe.startswith("5m"):
+        return "5 хв"
+    if timeframe.startswith("1m"):
+        return "1 хв"
     mapping = {
-        "1m": "1 хв",
-        "5m": "5 хв",
         "15m": "15 хв",
         "1h": "1 год",
         "4h": "4 год",

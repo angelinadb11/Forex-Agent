@@ -15,6 +15,7 @@ from telegram.message_format import (
     format_agent_summary,
     format_scalp_trade_signal as build_scalp_trade_signal_message,
     format_premium_scalp_trade_signal as build_premium_scalp_trade_signal_message,
+    format_turtle_soup_scalp_trade_signal as build_turtle_soup_scalp_trade_signal_message,
     format_trade_signal as build_trade_signal_message,
     format_trade_update_warning as build_trade_update_warning_message,
     format_high_risk_update as build_high_risk_update_message,
@@ -342,6 +343,21 @@ class TelegramBot:
     ) -> int:
         """Format and send a VIP premium scalp signal."""
         message = build_premium_scalp_trade_signal_message(
+            symbol,
+            signal,
+            timeframe=timeframe,
+        )
+        return self.send_message(message)
+
+    def send_turtle_soup_scalp_trade_signal(
+        self,
+        symbol: str,
+        signal: TradeSignal,
+        *,
+        timeframe: str = "5m",
+    ) -> int:
+        """Format and send a VIP 2 Turtle Soup scalp signal."""
+        message = build_turtle_soup_scalp_trade_signal_message(
             symbol,
             signal,
             timeframe=timeframe,

@@ -538,8 +538,6 @@ class TelegramBot:
         )
         message = format_take_profit_reply(
             tp_level=tp_level,
-            open_time=trade.open_time,
-            direction=trade.direction,
             entry=trade.entry,
             tp_price=tp_price,
             move_pips=move_pips,

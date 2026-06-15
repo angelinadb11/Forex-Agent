@@ -57,7 +57,7 @@ class FilterProfile:
 
 FILTER_PROFILE_A = FilterProfile(
     label="A",
-    description="Legacy: 4 primary votes, RSI weight, H4 hard block",
+    description="Light: 2/4 agents + H1/H4 + OB/FVG zone, min 60% (no RSI/zone-cluster/SMC conflict)",
     require_h4_h1_alignment=True,
     require_entry_zone=True,
     min_confidence=MIN_CONFIDENCE,
@@ -65,6 +65,10 @@ FILTER_PROFILE_A = FilterProfile(
     use_rsi_gate=False,
     h4_soft_mode=False,
 )
+
+# Main Trading Boss channel — legacy light filters (67% WR backtest baseline).
+FILTER_PROFILE_LIGHT = FILTER_PROFILE_A
+MAIN_CHANNEL_FILTER_PROFILE = FILTER_PROFILE_LIGHT
 
 FILTER_PROFILE_B = FilterProfile(
     label="B",

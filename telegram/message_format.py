@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import random
-from datetime import datetime
 
 from agents.base import AgentResult, Direction
 from signal_generator import TradeSignal, resolve_signal_direction
@@ -357,14 +356,6 @@ def format_high_risk_update(
     return "\n".join(lines)
 
 
-def format_open_time_label(open_time: str) -> str:
-    try:
-        parsed = datetime.fromisoformat(open_time.replace("Z", "+00:00"))
-        return parsed.strftime("%d.%m.%Y %H:%M UTC")
-    except ValueError:
-        return open_time
-
-
 def format_timeframe_label(timeframe: str) -> str:
     if timeframe.startswith("5m"):
         return "5 хв"
@@ -384,10 +375,6 @@ def format_trade_direction_label(direction: Direction) -> str:
     if direction == Direction.SHORT:
         return "ШОРТ"
     return direction.value.upper()
-
-
-def format_signal_header(open_time: str, direction: Direction) -> str:
-    return f"{format_open_time_label(open_time)} {format_trade_direction_label(direction)}"
 
 
 def format_trend_change_warning(
@@ -459,8 +446,6 @@ def format_stop_loss_reply(
 def format_take_profit_reply(
     *,
     tp_level: int,
-    open_time: str,
-    direction: Direction,
     entry: float,
     tp_price: float,
     move_pips: float,
@@ -474,7 +459,6 @@ def format_take_profit_reply(
         return "\n".join(
             [
                 "✅ ТЕЙК-ПРОФІТ 1",
-                f"└ Сигнал від: {format_signal_header(open_time, direction)}",
                 f"└ TP1 хітнуло: {tp_price:.2f}",
                 f"└ Хід: +{move_pips:.1f} pips",
                 "",
@@ -500,16 +484,28 @@ def format_take_profit_reply(
             ]
         )
 
+    if tp_level == 3:
+        return "\n".join(
+            [
+                "✅ ТЕЙК-ПРОФІТ 3",
+                f"└ TP3 хітнуло: {tp_price:.2f}",
+                f"└ Хід: +{move_pips:.1f} pips",
+                "",
+                "📌 Що робити зараз:",
+                "• На ваш розсуд — можете закрити всю позицію",
+                "• Або тримати далі, якщо SL уже перенесено в плюс",
+            ]
+        )
+
     return "\n".join(
         [
             f"✅ ТЕЙК-ПРОФІТ {tp_level}",
-            f"└ Сигнал від: {format_signal_header(open_time, direction)}",
             f"└ TP{tp_level} хітнуло: {tp_price:.2f}",
             f"└ Хід: +{move_pips:.1f} pips",
             "",
             "📌 Що робити зараз:",
-            "• Зафіксуй прибуток — закрий позицію або решту",
-            "• Не чекай TP3 якщо ринок уже дав хороший результат",
+            "• На ваш розсуд — можете закрити всю позицію",
+            "• Або тримати далі, якщо SL уже перенесено в плюс",
         ]
     )
 

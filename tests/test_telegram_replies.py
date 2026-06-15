@@ -50,8 +50,6 @@ class TelegramReplyFormatTests(unittest.TestCase):
     def test_tp1_reply_format(self):
         message = format_take_profit_reply(
             tp_level=1,
-            open_time="2026-06-07T14:30:00+00:00",
-            direction=Direction.LONG,
             entry=2650.00,
             tp_price=2651.00,
             move_pips=10.0,
@@ -60,7 +58,7 @@ class TelegramReplyFormatTests(unittest.TestCase):
             tp3=2653.00,
         )
         self.assertIn("✅ ТЕЙК-ПРОФІТ 1", message)
-        self.assertIn("ЛОНГ", message)
+        self.assertNotIn("Сигнал від:", message)
         self.assertIn("+10.0 pips", message)
         self.assertIn("2650.00", message)
         self.assertIn("2652.00", message)
@@ -69,8 +67,6 @@ class TelegramReplyFormatTests(unittest.TestCase):
     def test_tp2_reply_format(self):
         message = format_take_profit_reply(
             tp_level=2,
-            open_time="2026-06-07T14:30:00+00:00",
-            direction=Direction.SHORT,
             entry=2650.00,
             tp_price=2648.00,
             move_pips=20.0,
@@ -83,6 +79,22 @@ class TelegramReplyFormatTests(unittest.TestCase):
         self.assertIn("2649.00", message)
         self.assertIn("2647.00", message)
         self.assertIn("25% позиції", message)
+
+    def test_tp3_reply_format(self):
+        message = format_take_profit_reply(
+            tp_level=3,
+            entry=2650.00,
+            tp_price=2647.00,
+            move_pips=30.0,
+            tp1=2649.00,
+            tp2=2648.00,
+            tp3=2647.00,
+        )
+        self.assertIn("✅ ТЕЙК-ПРОФІТ 3", message)
+        self.assertIn("+30.0 pips", message)
+        self.assertIn("На ваш розсуд", message)
+        self.assertIn("SL уже перенесено в плюс", message)
+        self.assertNotIn("Зафіксуй прибуток", message)
 
     def test_xauusd_pip_helpers(self):
         move = trade_move_pips(

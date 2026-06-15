@@ -35,7 +35,7 @@ from strategy.turtle_soup_scalp import (
     build_turtle_soup_gate,
 )
 from strategy.signal_filter import (
-    FILTER_PROFILE_D,
+    MAIN_CHANNEL_FILTER_PROFILE,
     MIN_CONFIDENCE,
     MIN_CONFIDENCE_PCT,
     profile_symbols,
@@ -270,7 +270,7 @@ def build_bot_runtime(
 ) -> BotRuntime:
     provider = MarketDataProvider()
     signal_filter = SignalFilter.from_profile(
-        FILTER_PROFILE_D,
+        MAIN_CHANNEL_FILTER_PROFILE,
         london_ny_session_symbols=settings.london_ny_session_symbols,
         session_confidence_symbols=settings.session_confidence_symbols,
         news_gate=build_news_gate(
@@ -279,6 +279,10 @@ def build_bot_runtime(
             finnhub_api_key=settings.finnhub_api_key,
             calendar_url=settings.news_calendar_url or FOREX_FACTORY_CALENDAR_URL,
         ),
+    )
+    logger.info(
+        "Main channel filter: %s",
+        MAIN_CHANNEL_FILTER_PROFILE.description,
     )
     signal_generator = SignalGenerator()
     telegram_bot = TelegramBot.from_env()
@@ -461,14 +465,15 @@ def main() -> None:
     args = parse_args(settings)
 
     symbols = resolve_runtime_symbols(settings, args)
-    enabled_symbols = profile_symbols(FILTER_PROFILE_D, symbols)
+    enabled_symbols = profile_symbols(MAIN_CHANNEL_FILTER_PROFILE, symbols)
     timeframe = resolve_timeframe(args.timeframe)
 
     logger = setup_logging(settings)
     if enabled_symbols != symbols:
         disabled = set(symbols) - set(enabled_symbols)
         logger.info(
-            "Profile D: disabled symbols skipped: %s", ", ".join(sorted(disabled))
+            "Main channel profile: disabled symbols skipped: %s",
+            ", ".join(sorted(disabled)),
         )
     symbols = enabled_symbols
     logger.info("Analyzing symbols: %s", ", ".join(symbols))

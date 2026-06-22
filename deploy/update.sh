@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-APP_DIR="${APP_DIR:-/opt/forex-agent}"
+APP_DIR="${APP_DIR:-/root/Forex-Agent}"
 BRANCH="${BRANCH:-main}"
 
 cd "$APP_DIR"

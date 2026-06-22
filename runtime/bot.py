@@ -26,9 +26,9 @@ AnalyzeSymbolFn = Callable[
 AnalyzeScalpFn = Callable[..., tuple[TradeSignal | None, dict | None, object]]
 PublishScalpFn = Callable[..., ActiveTrade]
 
-DEFAULT_SCALP_SCAN_INTERVAL_SECONDS = 300.0
-DEFAULT_PREMIUM_SCAN_INTERVAL_SECONDS = 300.0
-DEFAULT_TURTLE_SCAN_INTERVAL_SECONDS = 300.0
+DEFAULT_SCALP_SCAN_INTERVAL_SECONDS = 60.0
+DEFAULT_PREMIUM_SCAN_INTERVAL_SECONDS = 60.0
+DEFAULT_TURTLE_SCAN_INTERVAL_SECONDS = 60.0
 
 
 class BotRuntime:
@@ -259,6 +259,12 @@ class BotRuntime:
                 logger=self.logger,
             )
             if signal is None or results is None or filter_result is None:
+                if filter_result is not None and not filter_result.approved:
+                    self.logger.info(
+                        "Main scan skipped for %s: %s",
+                        display_symbol,
+                        filter_result.message,
+                    )
                 continue
 
             decision = self.dedup.can_publish(symbol, signal, self._open_symbols())
@@ -316,7 +322,7 @@ class BotRuntime:
             )
             if signal is None or scalp_result is None:
                 if scalp_result is not None and scalp_result.message:
-                    self.logger.debug(
+                    self.logger.info(
                         "Scalp skipped for %s: %s",
                         display_symbol,
                         scalp_result.message,
@@ -416,7 +422,7 @@ class BotRuntime:
             )
             if signal is None or premium_result is None:
                 if premium_result is not None and premium_result.message:
-                    self.logger.debug(
+                    self.logger.info(
                         "VIP scalp skipped for %s: %s",
                         display_symbol,
                         premium_result.message,
@@ -488,7 +494,7 @@ class BotRuntime:
             )
             if signal is None or turtle_result is None:
                 if turtle_result is not None and turtle_result.message:
-                    self.logger.debug(
+                    self.logger.info(
                         "VIP2 Turtle Soup skipped for %s: %s",
                         display_symbol,
                         turtle_result.message,

@@ -51,6 +51,27 @@ class SignalDedupGateTests(unittest.TestCase):
         self.assertFalse(decision.allowed)
         self.assertIn("duplicate setup", decision.reason or "")
 
+    def test_seeds_fingerprint_when_stop_at_breakeven(self):
+        from tracking.trade_monitor import ActiveTrade
+
+        gate = SignalDedupGate(signal_cooldown_minutes=0)
+        trade = ActiveTrade(
+            symbol="XAUUSD",
+            direction=Direction.LONG,
+            entry=4050.34,
+            stop_loss=4050.34,
+            tp1=4054.05,
+            tp2=4055.0,
+            tp3=4056.68,
+            confidence=0.80,
+            reason="seed be",
+            open_time="2026-06-29T00:00:00+00:00",
+            initial_stop_loss=4048.0,
+        )
+        gate.seed_from_active_trades([trade])
+        decision = gate.can_publish("XAUUSD", self._signal(), set())
+        self.assertTrue(decision.allowed)
+
 
 if __name__ == "__main__":
     unittest.main()

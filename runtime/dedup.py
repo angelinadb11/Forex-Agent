@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Iterable
 
+from agents.base import Direction
 from config.symbols import resolve_symbol
 from signal_generator import TradeSignal, resolve_signal_direction
 from tracking.trade_monitor import ActiveTrade
@@ -74,17 +75,19 @@ class SignalDedupGate:
         for trade in trades:
             if trade.closed:
                 continue
-            signal = TradeSignal(
-                trade.direction,
-                trade.entry,
-                trade.stop_loss,
-                trade.tp1,
-                trade.tp2,
-                trade.tp3,
-                trade.confidence,
-                trade.reason,
+            display_symbol = resolve_symbol(trade.symbol).display
+            direction = trade.direction
+            if not isinstance(direction, Direction):
+                direction = Direction(str(direction))
+            self._last_fingerprints[display_symbol] = (
+                f"{direction.value}|"
+                f"{self._round_level(trade.entry)}|"
+                f"{self._round_level(trade.stop_loss)}"
             )
-            self.record_published(trade.symbol, signal)
+            if self.signal_cooldown_minutes > 0:
+                self._cooldown_until[display_symbol] = datetime.now(timezone.utc) + timedelta(
+                    minutes=self.signal_cooldown_minutes
+                )
 
     def _fingerprint(self, signal: TradeSignal) -> str:
         direction = resolve_signal_direction(signal)

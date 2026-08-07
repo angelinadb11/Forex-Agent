@@ -193,7 +193,7 @@ def build_bot_runtime(
         )
     else:
         logger.info(
-            "Main channel XAUUSD pricing: Yahoo Finance spot (XAUUSD=X, forex-like)"
+            "Main channel XAUUSD pricing: Yahoo Finance (GC=F COMEX gold, forex-like)"
         )
     logger.info("SPACE/scalp streams: Binance XAUUSDT (unchanged)")
 

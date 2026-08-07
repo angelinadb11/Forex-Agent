@@ -12,6 +12,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Literal
 
 import pandas as pd
+import requests
 
 from agents.base import AgentResult, Direction
 from agents.smc_agent import (
@@ -792,13 +793,27 @@ def analyze_trading_boss_killzone_symbol(
     symbol_def = resolve_symbol(symbol)
     display_symbol = symbol_def.display
 
-    context_m15 = provider.to_context(display_symbol, TRADING_BOSS_TIMEFRAME, limit=candle_limit)
-    context_m5 = provider.to_context(
-        display_symbol,
-        SWEEP_TIMEFRAME,
-        limit=max(candle_limit, 400),
-        include_h4_trend=True,
-    )
+    try:
+        context_m15 = provider.to_context(display_symbol, TRADING_BOSS_TIMEFRAME, limit=candle_limit)
+        context_m5 = provider.to_context(
+            display_symbol,
+            SWEEP_TIMEFRAME,
+            limit=max(candle_limit, 400),
+            include_h4_trend=True,
+        )
+    except requests.RequestException as exc:
+        logger.error("Market data fetch failed for %s: %s", display_symbol, exc)
+        return (
+            None,
+            None,
+            FilterResult(
+                approved=False,
+                direction=Direction.NEUTRAL,
+                confidence=0.0,
+                message=f"NO TRADE: market data unavailable ({exc})",
+            ),
+            None,
+        )
     timestamp = context_m15.get("timestamp")
     if isinstance(timestamp, datetime):
         timestamp = _utc(timestamp)

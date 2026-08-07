@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 from typing import Any
+from urllib.parse import quote
 
 import requests
 
 from data.providers.base import BaseDataProvider, Candle, DEFAULT_LIMIT
 
 YAHOO_CHART_API = "https://query1.finance.yahoo.com/v8/finance/chart"
+
+XAUUSD_YAHOO_TICKERS = ("GC=F", "MGC=F")
 
 INDEX_SYMBOLS: dict[str, dict[str, str]] = {
     "DJ30": {
@@ -26,8 +29,8 @@ INDEX_SYMBOLS: dict[str, dict[str, str]] = {
         "name": "British Pound / US Dollar",
     },
     "XAUUSD": {
-        "yahoo_ticker": "XAUUSD=X",
-        "name": "Gold Spot / US Dollar",
+        "yahoo_ticker": "GC=F",
+        "name": "COMEX Gold Futures (GC=F)",
     },
 }
 
@@ -53,6 +56,12 @@ class IndexProvider(BaseDataProvider):
             return "XAUUSD"
         return symbol
 
+    def _yahoo_tickers_for(self, symbol: str) -> tuple[str, ...]:
+        symbol = self.normalize_symbol(symbol)
+        if symbol == "XAUUSD":
+            return XAUUSD_YAHOO_TICKERS
+        return (INDEX_SYMBOLS[symbol]["yahoo_ticker"],)
+
     def get_market_data(
         self,
         symbol: str,
@@ -67,15 +76,23 @@ class IndexProvider(BaseDataProvider):
             supported = ", ".join(self.supported_symbols)
             raise ValueError(f"Unsupported index symbol '{symbol}'. Use one of: {supported}")
 
-        ticker = INDEX_SYMBOLS[symbol]["yahoo_ticker"]
         range_param = self._range_for_limit(timeframe, limit)
-        raw = self._fetch_chart(ticker, timeframe, range_param)
-        candles = self._parse_chart_response(raw)
+        last_error: requests.HTTPError | None = None
+        for ticker in self._yahoo_tickers_for(symbol):
+            try:
+                raw = self._fetch_chart(ticker, timeframe, range_param)
+                candles = self._parse_chart_response(raw)
+            except requests.HTTPError as exc:
+                last_error = exc
+                continue
 
-        if len(candles) < limit:
-            return candles
+            if len(candles) < limit:
+                return candles
+            return candles[-limit:]
 
-        return candles[-limit:]
+        if last_error is not None:
+            raise last_error
+        raise ValueError(f"Yahoo Finance returned no candles for {symbol}")
 
     @staticmethod
     def _range_for_limit(timeframe: str, limit: int) -> str:
@@ -91,7 +108,7 @@ class IndexProvider(BaseDataProvider):
         return INDEX_SYMBOLS[symbol]["name"]
 
     def _fetch_chart(self, ticker: str, interval: str, range_param: str) -> dict[str, Any]:
-        url = f"{YAHOO_CHART_API}/{ticker}"
+        url = f"{YAHOO_CHART_API}/{quote(ticker, safe='')}"
         params = {
             "interval": interval,
             "range": range_param,
@@ -100,7 +117,11 @@ class IndexProvider(BaseDataProvider):
 
         response = requests.get(url, params=params, headers=headers, timeout=30)
         response.raise_for_status()
-        return response.json()
+        payload = response.json()
+        result = payload.get("chart", {}).get("result")
+        if not result:
+            raise ValueError(f"Yahoo Finance returned no chart data for {ticker}")
+        return payload
 
     @staticmethod
     def _parse_chart_response(payload: dict[str, Any]) -> list[Candle]:
@@ -135,6 +156,15 @@ class IndexProvider(BaseDataProvider):
             supported = ", ".join(self.supported_symbols)
             raise ValueError(f"Unsupported index symbol '{symbol}'. Use one of: {supported}")
 
-        ticker = INDEX_SYMBOLS[symbol]["yahoo_ticker"]
-        payload = self._fetch_chart(ticker, "1m", "1d")
-        return float(payload["chart"]["result"][0]["meta"]["regularMarketPrice"])
+        last_error: requests.HTTPError | None = None
+        for ticker in self._yahoo_tickers_for(symbol):
+            try:
+                payload = self._fetch_chart(ticker, "1m", "1d")
+                return float(payload["chart"]["result"][0]["meta"]["regularMarketPrice"])
+            except requests.HTTPError as exc:
+                last_error = exc
+                continue
+
+        if last_error is not None:
+            raise last_error
+        raise ValueError(f"Yahoo Finance returned no price for {symbol}")

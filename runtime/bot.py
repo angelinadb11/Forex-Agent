@@ -251,15 +251,24 @@ class BotRuntime:
                 )
                 continue
 
-            signal, results, filter_result, context = self.analyze_symbol(
-                symbol,
-                provider=self.provider,
-                timeframe=self.timeframe,
-                candle_limit=self.candle_limit,
-                signal_filter=self.signal_filter,
-                signal_generator=self.signal_generator,
-                logger=self.logger,
-            )
+            try:
+                signal, results, filter_result, context = self.analyze_symbol(
+                    symbol,
+                    provider=self.provider,
+                    timeframe=self.timeframe,
+                    candle_limit=self.candle_limit,
+                    signal_filter=self.signal_filter,
+                    signal_generator=self.signal_generator,
+                    logger=self.logger,
+                )
+            except Exception as exc:
+                self.logger.exception(
+                    "Main scan failed for %s: %s",
+                    display_symbol,
+                    exc,
+                )
+                continue
+
             if signal is None or results is None or filter_result is None:
                 if filter_result is not None and not filter_result.approved:
                     self.logger.info(

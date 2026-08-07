@@ -59,7 +59,7 @@ class IndexProviderGoldTests(unittest.TestCase):
 
         provider = IndexProvider()
         self.assertEqual(provider.normalize_symbol("XAUUSDT"), "XAUUSD")
-        self.assertEqual(provider.index_name("XAUUSDT"), "Gold Spot / US Dollar")
+        self.assertEqual(provider.index_name("XAUUSDT"), "COMEX Gold Futures (GC=F)")
 
 
 class MarketDataProviderRoutingTests(unittest.TestCase):

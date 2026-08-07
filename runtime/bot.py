@@ -41,6 +41,7 @@ class BotRuntime:
         timeframe: str,
         logger: logging.Logger,
         provider: MarketDataProvider,
+        scalp_provider: MarketDataProvider | None = None,
         signal_filter: SignalFilter,
         signal_generator: SignalGenerator,
         monitor: TradeMonitor,
@@ -73,6 +74,7 @@ class BotRuntime:
         self.timeframe = timeframe
         self.logger = logger
         self.provider = provider
+        self.scalp_provider = scalp_provider or provider
         self.signal_filter = signal_filter
         self.signal_generator = signal_generator
         self.monitor = monitor
@@ -318,7 +320,7 @@ class BotRuntime:
 
             signal, context, scalp_result = self.analyze_scalp_fn(
                 symbol,
-                provider=self.provider,
+                provider=self.scalp_provider,
             )
             if signal is None or scalp_result is None:
                 if scalp_result is not None and scalp_result.message:
@@ -418,7 +420,7 @@ class BotRuntime:
 
             signal, context, premium_result = self.analyze_premium_scalp_fn(
                 symbol,
-                provider=self.provider,
+                provider=self.scalp_provider,
             )
             if signal is None or premium_result is None:
                 if premium_result is not None and premium_result.message:
@@ -490,7 +492,7 @@ class BotRuntime:
 
             signal, context, turtle_result = self.analyze_turtle_soup_scalp_fn(
                 symbol,
-                provider=self.provider,
+                provider=self.scalp_provider,
             )
             if signal is None or turtle_result is None:
                 if turtle_result is not None and turtle_result.message:

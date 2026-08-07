@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from config.symbols import SUPPORTED_SYMBOLS, SUPPORTED_TIMEFRAMES, SymbolDefinition, resolve_symbol, resolve_timeframe
+from config.settings import Settings
 from data.providers.base import (
     DEFAULT_LIMIT,
     BaseDataProvider,
@@ -12,6 +13,7 @@ from data.providers.base import (
 )
 from data.providers.binance_provider import BinanceProvider
 from data.providers.index_provider import IndexProvider
+from data.providers.oanda_provider import OandaProvider
 
 
 @dataclass(frozen=True)
@@ -27,11 +29,29 @@ class MarketSnapshot:
 class MarketDataProvider:
     """Routes symbol requests to the correct market data backend."""
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        symbol_provider_overrides: dict[str, str] | None = None,
+        oanda_api_key: str = "",
+        oanda_account_id: str = "",
+        oanda_env: str = "practice",
+    ) -> None:
+        self._symbol_provider_overrides: dict[str, str] = {}
+        for symbol, provider_name in (symbol_provider_overrides or {}).items():
+            display = resolve_symbol(symbol).display
+            self._symbol_provider_overrides[display] = provider_name
+
         self._providers: dict[str, BaseDataProvider] = {
             "binance": BinanceProvider(),
             "index": IndexProvider(),
         }
+        if oanda_api_key.strip():
+            self._providers["oanda"] = OandaProvider(
+                api_key=oanda_api_key,
+                account_id=oanda_account_id,
+                env=oanda_env,
+            )
 
     def resolve(self, symbol: str):
         return resolve_symbol(symbol)
@@ -64,6 +84,10 @@ class MarketDataProvider:
         if isinstance(provider, BinanceProvider):
             metadata["source"] = "binance"
             metadata["market"] = provider.market_type(symbol_def.data_symbol)
+        elif isinstance(provider, OandaProvider):
+            metadata["source"] = "oanda"
+            metadata["market"] = "cfd"
+            metadata["instrument"] = provider.instrument_for(symbol_def.data_symbol)
         elif isinstance(provider, IndexProvider):
             metadata["source"] = "yahoo_finance"
             metadata["market"] = "index"
@@ -104,6 +128,8 @@ class MarketDataProvider:
         _, provider = self._resolve_provider(symbol)
         if isinstance(provider, BinanceProvider):
             return "binance"
+        if isinstance(provider, OandaProvider):
+            return "oanda"
         return "yahoo_finance"
 
     def get_current_price(self, symbol: str) -> float:
@@ -129,6 +155,12 @@ class MarketDataProvider:
                 timeframe,
                 total_candles,
             )
+        if isinstance(provider, OandaProvider):
+            return provider.get_historical_market_data(
+                symbol_def.data_symbol,
+                timeframe,
+                total_candles,
+            )
 
         return provider.get_market_data(
             symbol_def.data_symbol,
@@ -138,8 +170,32 @@ class MarketDataProvider:
 
     def _resolve_provider(self, symbol: str) -> tuple[SymbolDefinition, BaseDataProvider]:
         symbol_def = resolve_symbol(symbol)
-        provider = self._providers[symbol_def.provider]
+        provider_key = self._symbol_provider_overrides.get(
+            symbol_def.display,
+            symbol_def.provider,
+        )
+        provider = self._providers.get(provider_key)
+        if provider is None:
+            provider = self._providers[symbol_def.provider]
         return symbol_def, provider
+
+
+def build_scalp_market_data_provider() -> MarketDataProvider:
+    """Default provider for SPACE/scalp streams (Binance XAUUSDT)."""
+    return MarketDataProvider()
+
+
+def build_main_market_data_provider(settings: Settings) -> MarketDataProvider:
+    """Main Trading Boss provider — OANDA for XAUUSD when API key is configured."""
+    if not settings.oanda_api_key.strip():
+        return build_scalp_market_data_provider()
+
+    return MarketDataProvider(
+        symbol_provider_overrides={"XAUUSD": "oanda"},
+        oanda_api_key=settings.oanda_api_key,
+        oanda_account_id=settings.oanda_account_id,
+        oanda_env=settings.oanda_env,
+    )
 
 
 def get_market_data(

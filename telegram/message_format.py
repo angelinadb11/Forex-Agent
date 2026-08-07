@@ -538,6 +538,9 @@ def format_agent_result(agent_name: str, result: AgentResult) -> str:
     direction = format_trade_direction_label(result.direction)
     confidence_pct = min(100, int(round(result.confidence * 100)))
     labels = {
+        "bias": "Bias (HTF)",
+        "structure": "Структура",
+        "execution": "Execution",
         "smc": "SMC",
         "liquidity": "Ліквідність",
         "fvg": "FVG",
@@ -556,6 +559,9 @@ def format_agent_result(agent_name: str, result: AgentResult) -> str:
 def format_agent_summary(results: dict[str, AgentResult]) -> str:
     lines = ["📊 Підсумок агентів"]
     labels = {
+        "bias": "Bias (HTF)",
+        "structure": "Структура",
+        "execution": "Execution",
         "smc": "SMC",
         "liquidity": "Ліквідність",
         "fvg": "FVG",

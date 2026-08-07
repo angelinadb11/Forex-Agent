@@ -2,22 +2,15 @@ import argparse
 import logging
 
 from agents.base import AgentResult
-from agents.zone_helpers import ZoneCatalog
 from config import SUPPORTED_SYMBOLS, SUPPORTED_TIMEFRAMES, load_settings, resolve_symbol, resolve_symbols, resolve_timeframe
 from config.logging_config import setup_logging
 from config.settings import Settings
-from data import MarketDataProvider
+from data import MarketDataProvider, build_main_market_data_provider, build_scalp_market_data_provider
 from news import build_news_gate
 from news.calendar_provider import FOREX_FACTORY_CALENDAR_URL
 from runtime import BotRuntime, SignalDedupGate
 from signal_generator import SignalGenerator, TradeSignal
-from strategy import (
-    build_signal_reason,
-    compute_final_decision,
-    format_agents_agreement,
-    run_agents,
-    SignalFilter,
-)
+from strategy.trading_boss_killzone import analyze_trading_boss_killzone_symbol
 from runtime.m15_reversal_block import M15ReversalBlockGate
 from strategy.liquidity_scalp import (
     LIQUIDITY_SCALP_TIMEFRAME,
@@ -38,6 +31,7 @@ from strategy.signal_filter import (
     MAIN_CHANNEL_FILTER_PROFILE,
     MIN_CONFIDENCE,
     MIN_CONFIDENCE_PCT,
+    SignalFilter,
     profile_symbols,
 )
 from config.settings import PROJECT_ROOT
@@ -138,124 +132,46 @@ def analyze_symbol(
     signal_generator: SignalGenerator,
     logger: logging.Logger,
 ) -> tuple[TradeSignal | None, dict[str, AgentResult] | None, object | None, dict | None]:
+    """Trading Boss main channel: Killzone Liquidity Sweep + OB/FVG pipeline."""
+    _ = signal_generator  # killzone builds signals directly; kept for BotRuntime API
     symbol_def = resolve_symbol(symbol)
     display_symbol = symbol_def.display
-    data_source = provider.data_source(display_symbol)
 
-    logger.info(
-        "Loading %s (%s) %s candles from %s",
-        display_symbol,
-        symbol_def.data_symbol,
-        timeframe,
-        data_source,
-    )
-
-    context = provider.to_context(display_symbol, timeframe, limit=candle_limit)
-    candles = context["candles"]
-    context["zone_catalog"] = ZoneCatalog.from_candles(candles, display_symbol)
-    context["bar_index"] = len(candles) - 1
-    logger.info("Loaded %s candles for %s", len(candles), display_symbol)
-
-    results = run_agents(context)
-    final_direction, final_confidence, long_score, short_score = compute_final_decision(
-        results,
-        signal_filter.decision_config,
+    signal, results, filter_result, context = analyze_trading_boss_killzone_symbol(
+        symbol,
+        provider=provider,
+        timeframe=timeframe,
+        candle_limit=candle_limit,
+        signal_filter=signal_filter,
+        logger=logger,
     )
 
     safe_print()
     safe_print(f"Symbol: {display_symbol}")
+    safe_print(f"Strategy: Killzone Sweep+OB/FVG")
     safe_print(f"Timeframe: {timeframe}")
-    safe_print(f"Candles loaded: {len(candles)}")
+    if context:
+        safe_print(f"Candles loaded: {len(context.get('candles', []))}")
     safe_print()
 
-    print_agent_result("SMC", results["smc"])
-    safe_print()
-    print_agent_result("Liquidity", results["liquidity"])
-    safe_print()
-    print_agent_result("FVG", results["fvg"])
-    safe_print()
-    print_agent_result("Order Block", results["order_block"])
-    safe_print()
-    print_agent_result("Trend Filter (H1)", results["trend_filter"])
-    if "h4_trend_filter" in results:
+    if results:
+        for label, key in (
+            ("Bias (H1/H4)", "bias"),
+            ("Liquidity", "liquidity"),
+            ("Structure", "structure"),
+            ("Session", "session"),
+            ("Execution", "execution"),
+        ):
+            print_agent_result(label, results[key])
+            safe_print()
+
+    if filter_result is not None:
+        print_filter_result(display_symbol, filter_result)
         safe_print()
-        print_agent_result("Trend Filter (H4)", results["h4_trend_filter"])
-    safe_print()
-    print_agent_result("RSI", results["rsi"])
-    safe_print()
-    print_agent_result("Session", results["session"])
-    safe_print()
 
-    safe_print(f"LONG score: {long_score:.2f}")
-    safe_print(f"SHORT score: {short_score:.2f}")
-    safe_print()
-    safe_print(f"Final decision: {final_direction.value.upper()}")
-    safe_print(f"Final confidence: {final_confidence:.2f}")
-    safe_print()
+    if signal is not None:
+        print_trade_signal(display_symbol, signal)
 
-    filter_result = signal_filter.evaluate(
-        results,
-        final_direction,
-        final_confidence,
-        symbol=display_symbol,
-        timestamp=context.get("timestamp"),
-        context=context,
-    )
-    print_filter_result(display_symbol, filter_result)
-    safe_print()
-
-    for name, result in results.items():
-        logger.info(
-            "%s | %s | %s | confidence=%.2f | %s",
-            display_symbol,
-            name,
-            result.direction.value,
-            result.confidence,
-            result.reason,
-        )
-
-    logger.info(
-        "%s | FINAL | %s | confidence=%.2f | long=%.2f short=%.2f",
-        display_symbol,
-        final_direction.value,
-        final_confidence,
-        long_score,
-        short_score,
-    )
-
-    if not filter_result.approved:
-        return None, results, filter_result, context
-
-    signal_reason = build_signal_reason(results, filter_result.direction)
-    generation = signal_generator.generate(
-        context,
-        filter_result.direction,
-        filter_result.confidence,
-        signal_reason,
-    )
-    if generation.signal is None:
-        safe_print("=== TRADE SIGNAL ===")
-        safe_print(f"Signal not generated for {display_symbol}: {generation.rejection_reason}")
-        logger.warning(
-            "Signal generation failed for %s: %s",
-            display_symbol,
-            generation.rejection_reason,
-        )
-        return None, results, filter_result, context
-
-    signal = generation.signal
-    print_trade_signal(display_symbol, signal)
-    logger.info(
-        "%s | SIGNAL | %s | entry=%.2f sl=%.2f tp1=%.2f tp2=%.2f tp3=%.2f | %s",
-        display_symbol,
-        signal.direction.value,
-        signal.entry,
-        signal.stop_loss,
-        signal.tp1,
-        signal.tp2,
-        signal.tp3,
-        signal.reason,
-    )
     return signal, results, filter_result, context
 
 
@@ -268,7 +184,19 @@ def build_bot_runtime(
     poll_interval: float,
     scan_interval: float,
 ) -> BotRuntime:
-    provider = MarketDataProvider()
+    scalp_provider = build_scalp_market_data_provider()
+    main_provider = build_main_market_data_provider(settings)
+    if settings.oanda_api_key.strip():
+        logger.info(
+            "Main channel XAUUSD pricing: OANDA v20 (%s)",
+            settings.oanda_env,
+        )
+    else:
+        logger.warning(
+            "OANDA_API_KEY not set — main channel XAUUSD falls back to Binance XAUUSDT"
+        )
+    logger.info("SPACE/scalp streams: Binance XAUUSDT (unchanged)")
+
     signal_filter = SignalFilter.from_profile(
         MAIN_CHANNEL_FILTER_PROFILE,
         london_ny_session_symbols=settings.london_ny_session_symbols,
@@ -281,12 +209,17 @@ def build_bot_runtime(
         ),
     )
     logger.info(
-        "Main channel filter: %s",
-        MAIN_CHANNEL_FILTER_PROFILE.description,
+        "Main channel: Killzone Liquidity Sweep + OB/FVG (profile %s)",
+        MAIN_CHANNEL_FILTER_PROFILE.label,
     )
     signal_generator = SignalGenerator()
     telegram_bot = TelegramBot.from_env()
-    context_fetcher = lambda symbol, tf: provider.to_context(
+    context_fetcher = lambda symbol, tf: main_provider.to_context(
+        symbol,
+        tf,
+        limit=settings.candle_limit,
+    )
+    scalp_context_fetcher = lambda symbol, tf: scalp_provider.to_context(
         symbol,
         tf,
         limit=settings.candle_limit,
@@ -295,8 +228,8 @@ def build_bot_runtime(
 
     trade_manager = (
         TelegramTradeManager(
-            price_fetcher=lambda symbol: provider.get_current_price(symbol),
-            candle_fetcher=lambda symbol, tf: provider.get_market_data(symbol, tf, limit=1)[-1],
+            price_fetcher=lambda symbol: main_provider.get_current_price(symbol),
+            candle_fetcher=lambda symbol, tf: main_provider.get_market_data(symbol, tf, limit=1)[-1],
             telegram_bot=telegram_bot,
             poll_interval=poll_interval,
             context_fetcher=context_fetcher,
@@ -310,8 +243,8 @@ def build_bot_runtime(
         monitor = trade_manager.monitor
     else:
         monitor = TradeMonitor(
-            price_fetcher=lambda symbol: provider.get_current_price(symbol),
-            candle_fetcher=lambda symbol, tf: provider.get_market_data(symbol, tf, limit=1)[-1],
+            price_fetcher=lambda symbol: main_provider.get_current_price(symbol),
+            candle_fetcher=lambda symbol, tf: main_provider.get_market_data(symbol, tf, limit=1)[-1],
             telegram_bot=None,
             context_fetcher=context_fetcher,
             m15_reversal_block=m15_reversal_block,
@@ -339,15 +272,15 @@ def build_bot_runtime(
     scalp_trade_manager = None
     if scalp_telegram_bot is not None:
         scalp_trade_manager = TelegramTradeManager(
-            price_fetcher=lambda symbol: provider.get_current_price(symbol),
-            candle_fetcher=lambda symbol, tf: provider.get_market_data(
+            price_fetcher=lambda symbol: scalp_provider.get_current_price(symbol),
+            candle_fetcher=lambda symbol, tf: scalp_provider.get_market_data(
                 symbol,
                 resolve_scalp_market_timeframe(tf),
                 limit=1,
             )[-1],
             telegram_bot=scalp_telegram_bot,
             poll_interval=poll_interval,
-            context_fetcher=context_fetcher,
+            context_fetcher=scalp_context_fetcher,
             history_store=TradeHistoryStore(PROJECT_ROOT / "scalp_trade_history.json"),
             active_trades_store=ActiveTradesStore(PROJECT_ROOT / "scalp_active_trades.json"),
         )
@@ -432,7 +365,8 @@ def build_bot_runtime(
         symbols=symbols,
         timeframe=timeframe,
         logger=logger,
-        provider=provider,
+        provider=main_provider,
+        scalp_provider=scalp_provider,
         signal_filter=signal_filter,
         signal_generator=signal_generator,
         monitor=monitor,

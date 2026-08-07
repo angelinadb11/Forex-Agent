@@ -46,6 +46,9 @@ class Settings:
     telegram_token: str = ""
     telegram_chat_id: str = ""
     telegram_bot_token: str = ""
+    oanda_api_key: str = ""
+    oanda_account_id: str = ""
+    oanda_env: str = "practice"
 
 
 def _parse_symbol_list(raw_value: str) -> tuple[str, ...]:
@@ -101,6 +104,9 @@ def load_settings() -> Settings:
         telegram_token=os.getenv("TELEGRAM_TOKEN", ""),
         telegram_chat_id=os.getenv("TELEGRAM_CHAT_ID", ""),
         telegram_bot_token=os.getenv("TELEGRAM_BOT_TOKEN", ""),
+        oanda_api_key=os.getenv("OANDA_API_KEY", ""),
+        oanda_account_id=os.getenv("OANDA_ACCOUNT_ID", ""),
+        oanda_env=os.getenv("OANDA_ENV", "practice"),
     )
 
 

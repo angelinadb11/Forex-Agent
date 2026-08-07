@@ -7,6 +7,7 @@ weighted confidence scoring. Main channel only — scalp streams are unchanged.
 from __future__ import annotations
 
 import logging
+import os
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Literal
@@ -51,9 +52,70 @@ from tracking.trade_pnl import pip_size_for_symbol
 
 LOGGER = logging.getLogger(__name__)
 
+# Legacy aliases (standard profile defaults).
 TRADING_BOSS_TIMEFRAME = "15m"
 STRUCTURE_TIMEFRAME = "5m"
 SWEEP_TIMEFRAME = "5m"
+
+
+@dataclass(frozen=True)
+class KillzoneProfile:
+    """Timeframe and risk preset for Trading Boss killzone setups."""
+
+    name: str
+    context_tf: str
+    sweep_tf: str
+    htf_filter_tf: str
+    sweep_reclaim_bars: int
+    sweep_lookback_bars: int
+    sl_atr_buffer_mult: float
+    min_wick_atr_mult: float
+    max_sl_pips: dict[str, float]
+    min_sl_pips: dict[str, float]
+
+
+KILLZONE_PROFILE_STANDARD = KillzoneProfile(
+    name="standard",
+    context_tf="15m",
+    sweep_tf="5m",
+    htf_filter_tf="15m",
+    sweep_reclaim_bars=3,
+    sweep_lookback_bars=80,
+    sl_atr_buffer_mult=0.35,
+    min_wick_atr_mult=0.15,
+    max_sl_pips={"XAUUSD": 80.0, "default": 150.0},
+    min_sl_pips={"XAUUSD": 15.0, "default": 20.0},
+)
+
+KILLZONE_PROFILE_PRECISION = KillzoneProfile(
+    name="precision",
+    context_tf="5m",
+    sweep_tf="1m",
+    htf_filter_tf="5m",
+    sweep_reclaim_bars=3,
+    sweep_lookback_bars=120,
+    sl_atr_buffer_mult=0.25,
+    min_wick_atr_mult=0.12,
+    max_sl_pips={"XAUUSD": 40.0, "BTCUSDT": 250.0, "default": 80.0},
+    min_sl_pips={"XAUUSD": 8.0, "BTCUSDT": 80.0, "default": 10.0},
+)
+
+DEFAULT_KILLZONE_PROFILE = KILLZONE_PROFILE_PRECISION
+
+
+def resolve_killzone_profile(profile_name: str | None = None) -> KillzoneProfile:
+    """Return Trading Boss profile from env/config (default: precision / smaller SL)."""
+    key = (profile_name or os.getenv("TRADING_BOSS_KILLZONE_PROFILE", "precision")).strip().lower()
+    if key in {"standard", "legacy", "m15"}:
+        return KILLZONE_PROFILE_STANDARD
+    return KILLZONE_PROFILE_PRECISION
+
+
+def _profile_sl_limits(symbol: str, profile: KillzoneProfile) -> tuple[float, float]:
+    display = resolve_symbol(symbol).display
+    max_pips = profile.max_sl_pips.get(display, profile.max_sl_pips["default"])
+    min_pips = profile.min_sl_pips.get(display, profile.min_sl_pips["default"])
+    return min_pips, max_pips
 
 # Kyiv UTC+3 → UTC killzones
 LONDON_KILLZONE_START = (6, 0)
@@ -65,7 +127,6 @@ SWEEP_RECLAIM_BARS = 3
 SWEEP_LOOKBACK_BARS = 80
 MIN_WICK_ATR_MULT = 0.15
 SL_ATR_BUFFER_MULT = 0.35
-MIN_RR_TP2 = 2.0
 COUNTER_BIAS_WEIGHT = 0.15
 ALIGNMENT_BONUS = 0.10
 
@@ -207,16 +268,16 @@ def build_killzone_liquidity_levels(
     return levels
 
 
-def _m15_close_for_m5_bar(
-    m5_ts: datetime,
-    m15_candles: list[dict[str, Any]],
-    m15_timestamps: list[datetime],
+def _htf_close_for_ltf_bar(
+    ltf_ts: datetime,
+    htf_candles: list[dict[str, Any]],
+    htf_timestamps: list[datetime],
 ) -> float | None:
-    target = _utc(m5_ts)
-    for j in range(len(m15_timestamps) - 1, -1, -1):
-        ts = m15_timestamps[j]
+    target = _utc(ltf_ts)
+    for j in range(len(htf_timestamps) - 1, -1, -1):
+        ts = htf_timestamps[j]
         if ts <= target:
-            return float(m15_candles[j]["close"])
+            return float(htf_candles[j]["close"])
     return None
 
 
@@ -316,34 +377,43 @@ def _sweep_wick_depth(candle: dict[str, Any], level: RefLevel) -> float:
 
 
 def detect_liquidity_sweep(
-    candles_m5: list[dict[str, Any]],
-    timestamps_m5: list[datetime],
+    sweep_candles: list[dict[str, Any]],
+    sweep_timestamps: list[datetime],
     *,
-    m15_candles: list[dict[str, Any]],
-    m15_timestamps: list[datetime],
+    htf_candles: list[dict[str, Any]],
+    htf_timestamps: list[datetime],
     bias: BiasAnalysis,
     atr: float,
-    reclaim_bars: int = SWEEP_RECLAIM_BARS,
+    profile: KillzoneProfile = DEFAULT_KILLZONE_PROFILE,
 ) -> SweepEvent | None:
-    if len(candles_m5) < reclaim_bars + 5:
+    reclaim_bars = profile.sweep_reclaim_bars
+    if len(sweep_candles) < reclaim_bars + 5:
         return None
 
-    search_end = len(candles_m5) - 1
-    search_start = max(0, search_end - SWEEP_LOOKBACK_BARS)
+    search_end = len(sweep_candles) - 1
+    search_start = max(0, search_end - profile.sweep_lookback_bars)
 
     best: SweepEvent | None = None
     for i in range(search_start, search_end):
-        levels = build_killzone_liquidity_levels(candles_m5, timestamps_m5, max(0, i - 1))
-        sweep = candles_m5[i]
-        prev = candles_m5[i - 1] if i > 0 else None
+        levels = build_killzone_liquidity_levels(
+            sweep_candles,
+            sweep_timestamps,
+            max(0, i - 1),
+        )
+        sweep = sweep_candles[i]
+        prev = sweep_candles[i - 1] if i > 0 else None
         if prev is None:
             continue
 
-        m15_close = _m15_close_for_m5_bar(timestamps_m5[i], m15_candles, m15_timestamps)
+        htf_close = _htf_close_for_ltf_bar(
+            sweep_timestamps[i],
+            htf_candles,
+            htf_timestamps,
+        )
 
         for ref in levels:
             wick = _sweep_wick_depth(sweep, ref)
-            if wick < MIN_WICK_ATR_MULT * atr:
+            if wick < profile.min_wick_atr_mult * atr:
                 continue
 
             if ref.kind == "low":
@@ -351,7 +421,7 @@ def detect_liquidity_sweep(
                     continue
                 if prev["low"] < ref.price:
                     continue
-                if m15_close is not None and m15_close < ref.price:
+                if htf_close is not None and htf_close < ref.price:
                     continue
                 direction = Direction.LONG
                 if bias.direction == Direction.SHORT:
@@ -361,15 +431,15 @@ def detect_liquidity_sweep(
                     continue
                 if prev["high"] > ref.price:
                     continue
-                if m15_close is not None and m15_close > ref.price:
+                if htf_close is not None and htf_close > ref.price:
                     continue
                 direction = Direction.SHORT
                 if bias.direction == Direction.LONG:
                     continue
 
             reclaim_index = i
-            for j in range(i, min(i + 1 + reclaim_bars, len(candles_m5))):
-                close = float(candles_m5[j]["close"])
+            for j in range(i, min(i + 1 + reclaim_bars, len(sweep_candles))):
+                close = float(sweep_candles[j]["close"])
                 if direction == Direction.LONG and close > ref.price:
                     reclaim_index = j
                     break
@@ -492,16 +562,17 @@ def build_killzone_setup(
     *,
     sweep: SweepEvent,
     structure: StructureSetup,
-    candles_m5: list[dict[str, Any]],
-    timestamps_m5: list[datetime],
+    sweep_candles: list[dict[str, Any]],
+    sweep_timestamps: list[datetime],
     atr: float,
     symbol: str,
+    profile: KillzoneProfile = DEFAULT_KILLZONE_PROFILE,
 ) -> KillzoneSetup | None:
     pip = pip_size_for_symbol(symbol) or 1.0
     direction = sweep.direction
     entry = structure.entry
 
-    buffer = max(SL_ATR_BUFFER_MULT * atr, 2.0 * pip)
+    buffer = max(profile.sl_atr_buffer_mult * atr, 2.0 * pip)
     if direction == Direction.LONG:
         stop_loss = sweep.sweep_extreme - buffer
         if stop_loss >= entry:
@@ -515,6 +586,11 @@ def build_killzone_setup(
     if risk <= 0:
         return None
 
+    sl_pips = risk / pip
+    min_sl_pips, max_sl_pips = _profile_sl_limits(symbol, profile)
+    if sl_pips > max_sl_pips or sl_pips < min_sl_pips:
+        return None
+
     tp1, tp2_default, tp3_default = build_take_profit_levels(
         direction,
         entry,
@@ -523,9 +599,9 @@ def build_killzone_setup(
     )
 
     levels = build_killzone_liquidity_levels(
-        candles_m5,
-        timestamps_m5,
-        len(candles_m5) - 1,
+        sweep_candles,
+        sweep_timestamps,
+        len(sweep_candles) - 1,
     )
     liquidity_tp = _next_liquidity_target(direction, entry, risk, levels)
     min_tp2 = entry + MIN_RR_TP2 * risk if direction == Direction.LONG else entry - MIN_RR_TP2 * risk
@@ -554,8 +630,9 @@ def build_killzone_setup(
         2,
     )
     reason = (
-        f"Killzone {direction.value.upper()}: {sweep.reason} | {structure.reason} | "
-        f"SL {risk / pip:.1f} pips, TP1 {planned_rr_to_target(entry, tp1, risk):.1f}R / "
+        f"Killzone {profile.name} {direction.value.upper()}: {sweep.reason} | "
+        f"{structure.reason} | SL {sl_pips:.1f} pips, "
+        f"TP1 {planned_rr_to_target(entry, tp1, risk):.1f}R / "
         f"TP2 {planned_rr_to_target(entry, tp2, risk):.1f}R"
     )
     return KillzoneSetup(
@@ -788,17 +865,24 @@ def analyze_trading_boss_killzone_symbol(
     candle_limit: int,
     signal_filter: SignalFilter,
     logger: logging.Logger,
+    profile: KillzoneProfile | None = None,
 ) -> tuple[TradeSignal | None, dict[str, AgentResult] | None, FilterResult | None, dict | None]:
     """Main-channel analysis: Liquidity Sweep + OB/FVG in Killzones."""
+    killzone_profile = profile or resolve_killzone_profile()
     symbol_def = resolve_symbol(symbol)
     display_symbol = symbol_def.display
+    sweep_limit = max(candle_limit, 400 if killzone_profile.sweep_tf == "5m" else 600)
 
     try:
-        context_m15 = provider.to_context(display_symbol, TRADING_BOSS_TIMEFRAME, limit=candle_limit)
-        context_m5 = provider.to_context(
+        context_htf = provider.to_context(
             display_symbol,
-            SWEEP_TIMEFRAME,
-            limit=max(candle_limit, 400),
+            killzone_profile.htf_filter_tf,
+            limit=candle_limit,
+        )
+        context_sweep = provider.to_context(
+            display_symbol,
+            killzone_profile.sweep_tf,
+            limit=sweep_limit,
             include_h4_trend=True,
         )
     except requests.RequestException as exc:
@@ -814,31 +898,38 @@ def analyze_trading_boss_killzone_symbol(
             ),
             None,
         )
-    timestamp = context_m15.get("timestamp")
+    timestamp = context_sweep.get("timestamp")
     if isinstance(timestamp, datetime):
         timestamp = _utc(timestamp)
 
-    candles_m15 = context_m15.get("candles", [])
-    candles_m5 = context_m5.get("candles", [])
-    h1_candles = context_m5.get("h1_candles") or context_m15.get("h1_candles")
-    h4_candles = context_m5.get("h4_candles")
+    htf_candles = context_htf.get("candles", [])
+    sweep_candles = context_sweep.get("candles", [])
+    h1_candles = context_sweep.get("h1_candles") or context_htf.get("h1_candles")
+    h4_candles = context_sweep.get("h4_candles")
 
     context = {
-        **context_m15,
-        "candles_m5": candles_m5,
-        "metadata": {**context_m15.get("metadata", {}), "timeframe": timeframe},
+        **context_sweep,
+        "candles_htf": htf_candles,
+        "metadata": {
+            **context_sweep.get("metadata", {}),
+            "timeframe": killzone_profile.sweep_tf,
+            "killzone_profile": killzone_profile.name,
+        },
     }
 
     logger.info(
-        "Killzone scan %s: M15=%s M5=%s H1=%s H4=%s",
+        "Killzone scan %s [%s]: HTF=%s/%s sweep=%s/%s H1=%s H4=%s",
         display_symbol,
-        len(candles_m15),
-        len(candles_m5),
+        killzone_profile.name,
+        killzone_profile.htf_filter_tf,
+        len(htf_candles),
+        killzone_profile.sweep_tf,
+        len(sweep_candles),
         len(h1_candles or []),
         len(h4_candles or []),
     )
 
-    if not h1_candles or len(candles_m5) < 30:
+    if not h1_candles or len(sweep_candles) < 30:
         results = run_killzone_agents(
             bias=BiasAnalysis(Direction.NEUTRAL, "equilibrium", 0.0, "no H1 data"),
             sweep=None,
@@ -855,28 +946,30 @@ def analyze_trading_boss_killzone_symbol(
         return None, results, filter_result, context
 
     bias = analyze_bias(h1_candles, h4_candles)
-    timestamps_m5 = build_timestamps(candles_m5)
-    timestamps_m15 = build_timestamps(candles_m15)
-    df_m5 = _candles_to_dataframe({"candles": candles_m5})
-    atr = calculate_atr(df_m5, period=14)
+    sweep_timestamps = build_timestamps(sweep_candles)
+    htf_timestamps = build_timestamps(htf_candles)
+    df_sweep = _candles_to_dataframe({"candles": sweep_candles})
+    atr = calculate_atr(df_sweep, period=14)
 
     sweep = detect_liquidity_sweep(
-        candles_m5,
-        timestamps_m5,
-        m15_candles=candles_m15,
-        m15_timestamps=timestamps_m15,
+        sweep_candles,
+        sweep_timestamps,
+        htf_candles=htf_candles,
+        htf_timestamps=htf_timestamps,
         bias=bias,
         atr=atr,
+        profile=killzone_profile,
     )
-    structure = find_structure_setup(candles_m5, sweep) if sweep else None
+    structure = find_structure_setup(sweep_candles, sweep) if sweep else None
     setup = (
         build_killzone_setup(
             sweep=sweep,
             structure=structure,
-            candles_m5=candles_m5,
-            timestamps_m5=timestamps_m5,
+            sweep_candles=sweep_candles,
+            sweep_timestamps=sweep_timestamps,
             atr=atr,
             symbol=display_symbol,
+            profile=killzone_profile,
         )
         if sweep and structure
         else None

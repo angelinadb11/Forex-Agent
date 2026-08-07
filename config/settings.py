@@ -49,6 +49,7 @@ class Settings:
     oanda_api_key: str = ""
     oanda_account_id: str = ""
     oanda_env: str = "practice"
+    trading_boss_killzone_profile: str = "precision"
 
 
 def _parse_symbol_list(raw_value: str) -> tuple[str, ...]:
@@ -107,6 +108,10 @@ def load_settings() -> Settings:
         oanda_api_key=os.getenv("OANDA_API_KEY", ""),
         oanda_account_id=os.getenv("OANDA_ACCOUNT_ID", ""),
         oanda_env=os.getenv("OANDA_ENV", "practice"),
+        trading_boss_killzone_profile=os.getenv(
+            "TRADING_BOSS_KILLZONE_PROFILE",
+            "precision",
+        ),
     )
 
 

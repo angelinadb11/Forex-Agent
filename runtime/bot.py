@@ -42,6 +42,7 @@ class BotRuntime:
         logger: logging.Logger,
         provider: MarketDataProvider,
         scalp_provider: MarketDataProvider | None = None,
+        main_killzone_timeframe: str | None = None,
         signal_filter: SignalFilter,
         signal_generator: SignalGenerator,
         monitor: TradeMonitor,
@@ -75,6 +76,7 @@ class BotRuntime:
         self.logger = logger
         self.provider = provider
         self.scalp_provider = scalp_provider or provider
+        self.main_killzone_timeframe = main_killzone_timeframe or timeframe
         self.signal_filter = signal_filter
         self.signal_generator = signal_generator
         self.monitor = monitor
@@ -573,7 +575,7 @@ class BotRuntime:
             return self.publish_signal_fn(
                 symbol,
                 signal,
-                timeframe=self.timeframe,
+                timeframe=self.main_killzone_timeframe,
                 agent_results=results,
                 agents_agreement=agents_agreement,
                 news_warning=filter_result.news_warning,
@@ -586,7 +588,7 @@ class BotRuntime:
             symbol,
             signal,
             agents_agreement=agents_agreement,
-            timeframe=self.timeframe,
+            timeframe=self.main_killzone_timeframe,
             entry_agent_results=results,
         )
         self.monitor.register_trade(trade, context=context)

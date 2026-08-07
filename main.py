@@ -1,5 +1,6 @@
 import argparse
 import logging
+from functools import partial
 
 from agents.base import AgentResult
 from config import SUPPORTED_SYMBOLS, SUPPORTED_TIMEFRAMES, load_settings, resolve_symbol, resolve_symbols, resolve_timeframe
@@ -10,7 +11,10 @@ from news import build_news_gate
 from news.calendar_provider import FOREX_FACTORY_CALENDAR_URL
 from runtime import BotRuntime, SignalDedupGate
 from signal_generator import SignalGenerator, TradeSignal
-from strategy.trading_boss_killzone import analyze_trading_boss_killzone_symbol
+from strategy.trading_boss_killzone import (
+    analyze_trading_boss_killzone_symbol,
+    resolve_killzone_profile,
+)
 from runtime.m15_reversal_block import M15ReversalBlockGate
 from strategy.liquidity_scalp import (
     LIQUIDITY_SCALP_TIMEFRAME,
@@ -131,11 +135,13 @@ def analyze_symbol(
     signal_filter: SignalFilter,
     signal_generator: SignalGenerator,
     logger: logging.Logger,
+    killzone_profile=None,
 ) -> tuple[TradeSignal | None, dict[str, AgentResult] | None, object | None, dict | None]:
     """Trading Boss main channel: Killzone Liquidity Sweep + OB/FVG pipeline."""
     _ = signal_generator  # killzone builds signals directly; kept for BotRuntime API
     symbol_def = resolve_symbol(symbol)
     display_symbol = symbol_def.display
+    profile = killzone_profile or resolve_killzone_profile()
 
     signal, results, filter_result, context = analyze_trading_boss_killzone_symbol(
         symbol,
@@ -144,12 +150,13 @@ def analyze_symbol(
         candle_limit=candle_limit,
         signal_filter=signal_filter,
         logger=logger,
+        profile=profile,
     )
 
     safe_print()
     safe_print(f"Symbol: {display_symbol}")
-    safe_print(f"Strategy: Killzone Sweep+OB/FVG")
-    safe_print(f"Timeframe: {timeframe}")
+    safe_print(f"Strategy: Killzone Sweep+OB/FVG ({profile.name})")
+    safe_print(f"Timeframe: {profile.sweep_tf}")
     if context:
         safe_print(f"Candles loaded: {len(context.get('candles', []))}")
     safe_print()
@@ -186,6 +193,7 @@ def build_bot_runtime(
 ) -> BotRuntime:
     scalp_provider = build_scalp_market_data_provider()
     main_provider = build_main_market_data_provider(settings)
+    killzone_profile = resolve_killzone_profile(settings.trading_boss_killzone_profile)
     if settings.oanda_api_key.strip():
         logger.info(
             "Main channel XAUUSD pricing: OANDA v20 (%s)",
@@ -207,6 +215,13 @@ def build_bot_runtime(
             finnhub_api_key=settings.finnhub_api_key,
             calendar_url=settings.news_calendar_url or FOREX_FACTORY_CALENDAR_URL,
         ),
+    )
+    logger.info(
+        "Main channel: Killzone profile %s (sweep=%s, HTF filter=%s, SL cap XAUUSD %.0f pips)",
+        killzone_profile.name,
+        killzone_profile.sweep_tf,
+        killzone_profile.htf_filter_tf,
+        killzone_profile.max_sl_pips.get("XAUUSD", killzone_profile.max_sl_pips["default"]),
     )
     logger.info(
         "Main channel: Killzone Liquidity Sweep + OB/FVG (profile %s)",
@@ -367,12 +382,13 @@ def build_bot_runtime(
         logger=logger,
         provider=main_provider,
         scalp_provider=scalp_provider,
+        main_killzone_timeframe=killzone_profile.sweep_tf,
         signal_filter=signal_filter,
         signal_generator=signal_generator,
         monitor=monitor,
         dedup=dedup,
         m15_reversal_block=m15_reversal_block,
-        analyze_symbol=analyze_symbol,
+        analyze_symbol=partial(analyze_symbol, killzone_profile=killzone_profile),
         candle_limit=settings.candle_limit,
         poll_interval_seconds=poll_interval,
         scan_interval_seconds=scan_interval,

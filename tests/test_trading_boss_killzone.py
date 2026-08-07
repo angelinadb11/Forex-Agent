@@ -16,6 +16,9 @@ from strategy.trading_boss_killzone import (
     detect_liquidity_sweep,
     evaluate_killzone_filter,
     is_killzone_session,
+    KILLZONE_PROFILE_PRECISION,
+    KILLZONE_PROFILE_STANDARD,
+    resolve_killzone_profile,
     run_killzone_agents,
 )
 from strategy.signal_filter import SignalFilter
@@ -23,6 +26,17 @@ from strategy.signal_filter import SignalFilter
 
 def _ts(hour: int, minute: int = 0) -> datetime:
     return datetime(2026, 6, 10, hour, minute, tzinfo=timezone.utc)
+
+
+class KillzoneProfileTests(unittest.TestCase):
+    def test_default_profile_is_precision(self) -> None:
+        self.assertEqual(resolve_killzone_profile().name, "precision")
+        self.assertEqual(resolve_killzone_profile().sweep_tf, "1m")
+
+    def test_standard_profile(self) -> None:
+        profile = resolve_killzone_profile("standard")
+        self.assertEqual(profile.name, "standard")
+        self.assertEqual(profile.sweep_tf, "5m")
 
 
 class KillzoneSessionTests(unittest.TestCase):
@@ -109,11 +123,11 @@ class SweepDetectionTests(unittest.TestCase):
         sweep = detect_liquidity_sweep(
             candles_m5,
             timestamps_m5,
-            m15_candles=m15_candles,
-            m15_timestamps=m15_timestamps,
+            htf_candles=m15_candles,
+            htf_timestamps=m15_timestamps,
             bias=bias,
             atr=atr,
-            reclaim_bars=3,
+            profile=KILLZONE_PROFILE_STANDARD,
         )
         self.assertIsNotNone(sweep)
         assert sweep is not None

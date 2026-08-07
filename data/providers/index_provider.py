@@ -25,6 +25,10 @@ INDEX_SYMBOLS: dict[str, dict[str, str]] = {
         "yahoo_ticker": "GBPUSD=X",
         "name": "British Pound / US Dollar",
     },
+    "XAUUSD": {
+        "yahoo_ticker": "XAUUSD=X",
+        "name": "Gold Spot / US Dollar",
+    },
 }
 
 TIMEFRAME_RANGE: dict[str, str] = {
@@ -42,6 +46,12 @@ class IndexProvider(BaseDataProvider):
     @property
     def supported_symbols(self) -> tuple[str, ...]:
         return tuple(INDEX_SYMBOLS.keys())
+
+    def normalize_symbol(self, symbol: str) -> str:
+        symbol = super().normalize_symbol(symbol)
+        if symbol == "XAUUSDT":
+            return "XAUUSD"
+        return symbol
 
     def get_market_data(
         self,

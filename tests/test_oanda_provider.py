@@ -53,11 +53,26 @@ class OandaProviderTests(unittest.TestCase):
         self.assertEqual(provider.instrument_for("XAUUSDT"), "XAU_USD")
 
 
+class IndexProviderGoldTests(unittest.TestCase):
+    def test_xauusdt_resolves_to_yahoo_gold(self) -> None:
+        from data.providers.index_provider import IndexProvider
+
+        provider = IndexProvider()
+        self.assertEqual(provider.normalize_symbol("XAUUSDT"), "XAUUSD")
+        self.assertEqual(provider.index_name("XAUUSDT"), "Gold Spot / US Dollar")
+
+
 class MarketDataProviderRoutingTests(unittest.TestCase):
     def test_main_provider_routes_xauusd_to_oanda(self) -> None:
         settings = Settings(oanda_api_key="test-token", oanda_account_id="101-001-1")
         provider = build_main_market_data_provider(settings)
         self.assertEqual(provider.data_source("XAUUSD"), "oanda")
+        self.assertEqual(provider.data_source("BTCUSDT"), "binance")
+
+    def test_main_provider_falls_back_to_yahoo_without_oanda(self) -> None:
+        settings = Settings(oanda_api_key="")
+        provider = build_main_market_data_provider(settings)
+        self.assertEqual(provider.data_source("XAUUSD"), "yahoo_finance")
         self.assertEqual(provider.data_source("BTCUSDT"), "binance")
 
     def test_scalp_provider_keeps_binance_for_xauusd(self) -> None:

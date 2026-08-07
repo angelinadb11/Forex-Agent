@@ -192,8 +192,8 @@ def build_bot_runtime(
             settings.oanda_env,
         )
     else:
-        logger.warning(
-            "OANDA_API_KEY not set — main channel XAUUSD falls back to Binance XAUUSDT"
+        logger.info(
+            "Main channel XAUUSD pricing: Yahoo Finance spot (XAUUSD=X, forex-like)"
         )
     logger.info("SPACE/scalp streams: Binance XAUUSDT (unchanged)")
 

@@ -186,15 +186,17 @@ def build_scalp_market_data_provider() -> MarketDataProvider:
 
 
 def build_main_market_data_provider(settings: Settings) -> MarketDataProvider:
-    """Main Trading Boss provider — OANDA for XAUUSD when API key is configured."""
-    if not settings.oanda_api_key.strip():
-        return build_scalp_market_data_provider()
+    """Main Trading Boss provider — OANDA or Yahoo spot gold for XAUUSD."""
+    if settings.oanda_api_key.strip():
+        return MarketDataProvider(
+            symbol_provider_overrides={"XAUUSD": "oanda"},
+            oanda_api_key=settings.oanda_api_key,
+            oanda_account_id=settings.oanda_account_id,
+            oanda_env=settings.oanda_env,
+        )
 
     return MarketDataProvider(
-        symbol_provider_overrides={"XAUUSD": "oanda"},
-        oanda_api_key=settings.oanda_api_key,
-        oanda_account_id=settings.oanda_account_id,
-        oanda_env=settings.oanda_env,
+        symbol_provider_overrides={"XAUUSD": "index"},
     )
 
 

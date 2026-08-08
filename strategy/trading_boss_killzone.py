@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import logging
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any, Literal
 
@@ -30,12 +30,15 @@ from data import MarketDataProvider
 from news.models import NewsAction
 from signal_generator import (
     MAIN_MIN_RR_TO_TP1,
+    TP_STEP_R,
     TradeSignal,
     align_trade_signal_direction,
     build_take_profit_levels,
     calculate_atr,
     planned_rr_to_target,
 )
+
+MIN_RR_TP2 = MAIN_MIN_RR_TO_TP1 + TP_STEP_R
 from strategy.signal_filter import (
     FilterResult,
     SignalFilter,
@@ -92,12 +95,12 @@ KILLZONE_PROFILE_PRECISION = KillzoneProfile(
     context_tf="5m",
     sweep_tf="1m",
     htf_filter_tf="5m",
-    sweep_reclaim_bars=3,
+    sweep_reclaim_bars=4,
     sweep_lookback_bars=120,
     sl_atr_buffer_mult=0.25,
-    min_wick_atr_mult=0.12,
-    max_sl_pips={"XAUUSD": 40.0, "BTCUSDT": 250.0, "default": 80.0},
-    min_sl_pips={"XAUUSD": 8.0, "BTCUSDT": 80.0, "default": 10.0},
+    min_wick_atr_mult=0.08,
+    max_sl_pips={"XAUUSD": 100.0, "BTCUSDT": 250.0, "default": 80.0},
+    min_sl_pips={"XAUUSD": 10.0, "BTCUSDT": 80.0, "default": 10.0},
 )
 
 DEFAULT_KILLZONE_PROFILE = KILLZONE_PROFILE_PRECISION
@@ -117,6 +120,23 @@ def _profile_sl_limits(symbol: str, profile: KillzoneProfile) -> tuple[float, fl
     min_pips = profile.min_sl_pips.get(display, profile.min_sl_pips["default"])
     return min_pips, max_pips
 
+
+def is_fresh_sweep(sweep: SweepEvent, candle_count: int) -> bool:
+    """Sweep reclaim is recent enough to treat as a new setup."""
+    return sweep.reclaim_index >= candle_count - FRESH_SWEEP_MAX_LAG_BARS
+
+
+def resolve_killzone_min_confidence(
+    symbol: str,
+    *,
+    default: float,
+) -> float:
+    try:
+        display = resolve_symbol(symbol).display
+    except ValueError:
+        display = symbol.upper()
+    return KILLZONE_MIN_CONFIDENCE.get(display, default)
+
 # Kyiv UTC+3 → UTC killzones
 LONDON_KILLZONE_START = (6, 0)
 LONDON_KILLZONE_END = (8, 0)
@@ -127,8 +147,13 @@ SWEEP_RECLAIM_BARS = 3
 SWEEP_LOOKBACK_BARS = 80
 MIN_WICK_ATR_MULT = 0.15
 SL_ATR_BUFFER_MULT = 0.35
-COUNTER_BIAS_WEIGHT = 0.15
+COUNTER_BIAS_WEIGHT = 0.22
 ALIGNMENT_BONUS = 0.10
+KILLZONE_DECISION_MIN_SCORE = 0.30
+FRESH_SWEEP_MAX_LAG_BARS = 3
+KILLZONE_MIN_CONFIDENCE: dict[str, float] = {
+    "XAUUSD": 0.42,
+}
 
 KILLZONE_AGENT_WEIGHTS: dict[str, float] = {
     "bias": 0.25,
@@ -232,6 +257,34 @@ def is_killzone_session(ts: datetime | None) -> tuple[bool, str]:
     if window is None:
         return False, "поза Killzone (London 09:00–11:00 / NY 14:30–16:30 Kyiv)"
     return True, f"{window.label} Killzone активна"
+
+
+def killzone_window_key(ts: datetime | None) -> tuple[str, str] | None:
+    """Unique slot per calendar day and Killzone window (London/NY)."""
+    window = active_killzone(ts)
+    if window is None or ts is None:
+        return None
+    return (_utc(ts).date().isoformat(), window.label)
+
+
+@dataclass
+class KillzoneWindowGate:
+    """Allow at most one main-channel signal per Killzone window per day."""
+
+    _filled: set[tuple[str, str]] = field(default_factory=set)
+
+    def can_take(self, ts: datetime | None) -> tuple[bool, str]:
+        key = killzone_window_key(ts)
+        if key is None:
+            return False, "outside killzone"
+        if key in self._filled:
+            return False, f"Killzone slot used ({key[1]} {key[0]})"
+        return True, "ok"
+
+    def record(self, ts: datetime | None) -> None:
+        key = killzone_window_key(ts)
+        if key is not None:
+            self._filled.add(key)
 
 
 def prev_day_range(
@@ -351,10 +404,10 @@ def analyze_bias(
         bearish += 0.10
         reasons.append("ціна в premium")
 
-    if bullish > bearish and bullish >= 0.35:
+    if bullish > bearish and bullish >= 0.30:
         direction = Direction.LONG
         confidence = min(0.90, bullish)
-    elif bearish > bullish and bearish >= 0.35:
+    elif bearish > bullish and bearish >= 0.30:
         direction = Direction.SHORT
         confidence = min(0.90, bearish)
     else:
@@ -385,6 +438,7 @@ def detect_liquidity_sweep(
     bias: BiasAnalysis,
     atr: float,
     profile: KillzoneProfile = DEFAULT_KILLZONE_PROFILE,
+    recent_bars_only: int | None = None,
 ) -> SweepEvent | None:
     reclaim_bars = profile.sweep_reclaim_bars
     if len(sweep_candles) < reclaim_bars + 5:
@@ -392,6 +446,8 @@ def detect_liquidity_sweep(
 
     search_end = len(sweep_candles) - 1
     search_start = max(0, search_end - profile.sweep_lookback_bars)
+    if recent_bars_only is not None:
+        search_start = max(search_start, search_end - recent_bars_only)
 
     best: SweepEvent | None = None
     for i in range(search_start, search_end):
@@ -421,21 +477,15 @@ def detect_liquidity_sweep(
                     continue
                 if prev["low"] < ref.price:
                     continue
-                if htf_close is not None and htf_close < ref.price:
-                    continue
                 direction = Direction.LONG
-                if bias.direction == Direction.SHORT:
-                    continue
             else:
                 if not (sweep["high"] > ref.price and sweep["close"] < ref.price):
                     continue
                 if prev["high"] > ref.price:
                     continue
-                if htf_close is not None and htf_close > ref.price:
-                    continue
                 direction = Direction.SHORT
-                if bias.direction == Direction.LONG:
-                    continue
+
+            counter_bias = bias.direction not in (Direction.NEUTRAL, direction)
 
             reclaim_index = i
             for j in range(i, min(i + 1 + reclaim_bars, len(sweep_candles))):
@@ -451,6 +501,13 @@ def detect_liquidity_sweep(
 
             wick_quality = min(1.0, wick / (0.5 * atr))
             confidence = round(0.45 + 0.35 * wick_quality, 2)
+            if counter_bias:
+                confidence = round(confidence * 0.65, 2)
+            if htf_close is not None:
+                if direction == Direction.LONG and htf_close < ref.price:
+                    confidence = round(confidence * 0.85, 2)
+                elif direction == Direction.SHORT and htf_close > ref.price:
+                    confidence = round(confidence * 0.85, 2)
             event = SweepEvent(
                 direction=direction,
                 level=ref,
@@ -483,7 +540,10 @@ def find_structure_setup(
     sweep: SweepEvent,
 ) -> StructureSetup | None:
     slice_candles = candles_m5[sweep.reclaim_index :]
-    if len(slice_candles) < 8:
+    if len(slice_candles) < 12:
+        start = max(0, min(sweep.sweep_index, len(candles_m5) - 12))
+        slice_candles = candles_m5[start:]
+    if len(slice_candles) < 5:
         return None
 
     df = pd.DataFrame(
@@ -511,7 +571,19 @@ def find_structure_setup(
         zones.append((fvg.low, fvg.high, "FVG", 0.50))
 
     if not zones:
-        return None
+        if not choch_ok:
+            return None
+        current_close = float(df.iloc[-1]["close"])
+        pad = max(0.5, sweep.wick_depth * 0.35)
+        return StructureSetup(
+            direction=sweep.direction,
+            entry=current_close,
+            zone_low=current_close - pad,
+            zone_high=current_close + pad,
+            zone_kind="OB",
+            confidence=0.48,
+            reason=f"CHoCH-only {sweep.direction.value}, no OB/FVG",
+        )
 
     zone_low, zone_high, zone_kind, base = max(zones, key=lambda item: item[3])
     current_close = float(df.iloc[-1]["close"])
@@ -522,9 +594,9 @@ def find_structure_setup(
         entry = (zone_low + zone_high) / 2
         entry_mode = "limit mid-zone"
 
-    confidence = base + (0.20 if choch_ok else 0.05)
+    confidence = base + (0.20 if choch_ok else 0.08)
     if not choch_ok:
-        confidence -= 0.15
+        confidence -= 0.08
 
     reason = (
         f"{zone_kind} {sweep.direction.value} {zone_low:.2f}-{zone_high:.2f}, "
@@ -732,10 +804,10 @@ def compute_killzone_decision(
         elif result.direction == Direction.SHORT:
             short_score += result.confidence * weight
 
-    if long_score > short_score and long_score >= 0.35:
+    if long_score > short_score and long_score >= KILLZONE_DECISION_MIN_SCORE:
         direction = Direction.LONG
         confidence = long_score
-    elif short_score > long_score and short_score >= 0.35:
+    elif short_score > long_score and short_score >= KILLZONE_DECISION_MIN_SCORE:
         direction = Direction.SHORT
         confidence = short_score
     else:
@@ -798,9 +870,12 @@ def evaluate_killzone_filter(
             message="NO TRADE: structure (CHoCH/OB/FVG) не підтверджує напрямок",
         )
 
-    min_conf = resolve_min_confidence(
+    min_conf = resolve_killzone_min_confidence(
         symbol,
-        default=signal_filter.min_confidence,
+        default=resolve_min_confidence(
+            symbol,
+            default=signal_filter.min_confidence,
+        ),
     )
     if confidence + 1e-6 < min_conf:
         return FilterResult(

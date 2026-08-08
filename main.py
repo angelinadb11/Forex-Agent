@@ -217,10 +217,11 @@ def build_bot_runtime(
         ),
     )
     logger.info(
-        "Main channel: Killzone profile %s (sweep=%s, HTF filter=%s, SL cap XAUUSD %.0f pips)",
+        "Main channel: Killzone profile %s (sweep=%s, HTF filter=%s, SL XAUUSD %.0f-%.0f pips, 1 signal/window)",
         killzone_profile.name,
         killzone_profile.sweep_tf,
         killzone_profile.htf_filter_tf,
+        killzone_profile.min_sl_pips.get("XAUUSD", killzone_profile.min_sl_pips["default"]),
         killzone_profile.max_sl_pips.get("XAUUSD", killzone_profile.max_sl_pips["default"]),
     )
     logger.info(

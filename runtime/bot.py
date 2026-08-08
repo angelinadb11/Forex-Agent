@@ -18,6 +18,7 @@ from tracking.console import safe_print
 from strategy.scalp_mode import SCALP_TIMEFRAME, is_scalp_enabled
 from strategy.sweep_fvg_scalp import SWEEP_FVG_TIMEFRAME, is_sweep_fvg_scalp_enabled
 from strategy.turtle_soup_scalp import TURTLE_SOUP_TIMEFRAME, is_turtle_soup_scalp_enabled
+from strategy.trading_boss_killzone import KillzoneWindowGate
 
 AnalyzeSymbolFn = Callable[
     ...,
@@ -48,6 +49,7 @@ class BotRuntime:
         monitor: TradeMonitor,
         dedup: SignalDedupGate,
         m15_reversal_block: M15ReversalBlockGate | None = None,
+        killzone_window_gate: KillzoneWindowGate | None = None,
         analyze_symbol: AnalyzeSymbolFn,
         candle_limit: int,
         poll_interval_seconds: float = 60.0,
@@ -82,6 +84,7 @@ class BotRuntime:
         self.monitor = monitor
         self.dedup = dedup
         self.m15_reversal_block = m15_reversal_block
+        self.killzone_window_gate = killzone_window_gate or KillzoneWindowGate()
         self.analyze_symbol = analyze_symbol
         self.candle_limit = candle_limit
         self.poll_interval_seconds = poll_interval_seconds
@@ -289,6 +292,16 @@ class BotRuntime:
                 )
                 continue
 
+            scan_ts = context.get("timestamp") if context else None
+            slot_ok, slot_reason = self.killzone_window_gate.can_take(scan_ts)
+            if not slot_ok:
+                self.logger.info(
+                    "Main scan skipped for %s: %s",
+                    display_symbol,
+                    slot_reason,
+                )
+                continue
+
             if self.m15_reversal_block is not None:
                 block_decision = self.m15_reversal_block.can_publish(
                     symbol,
@@ -311,6 +324,7 @@ class BotRuntime:
                 context=context,
             )
             self.dedup.record_published(symbol, signal)
+            self.killzone_window_gate.record(scan_ts)
             self.logger.info("Signal published for %s", display_symbol)
 
     def _scan_scalp_all_symbols(self) -> None:

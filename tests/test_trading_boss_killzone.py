@@ -16,6 +16,7 @@ from strategy.trading_boss_killzone import (
     detect_liquidity_sweep,
     evaluate_killzone_filter,
     is_killzone_session,
+    KillzoneWindowGate,
     KILLZONE_PROFILE_PRECISION,
     KILLZONE_PROFILE_STANDARD,
     resolve_killzone_profile,
@@ -188,7 +189,7 @@ class ConfidenceScoringTests(unittest.TestCase):
             in_killzone=True,
         )
         self.assertEqual(direction, Direction.LONG)
-        self.assertLessEqual(confidence, 0.15)
+        self.assertLessEqual(confidence, 0.22)
 
 
 class KillzoneFilterTests(unittest.TestCase):
@@ -211,6 +212,15 @@ class KillzoneFilterTests(unittest.TestCase):
         )
         self.assertFalse(outcome.approved)
         self.assertIn("Killzone", outcome.message)
+
+
+    def test_killzone_window_gate_allows_one_signal_per_window(self) -> None:
+        gate = KillzoneWindowGate()
+        london = _ts(7, 0)
+        self.assertTrue(gate.can_take(london)[0])
+        gate.record(london)
+        self.assertFalse(gate.can_take(_ts(7, 30))[0])
+        self.assertTrue(gate.can_take(_ts(12, 0))[0])
 
 
 if __name__ == "__main__":

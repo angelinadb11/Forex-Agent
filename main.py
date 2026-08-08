@@ -13,9 +13,13 @@ from runtime import BotRuntime, SignalDedupGate
 from signal_generator import SignalGenerator, TradeSignal
 from strategy.trading_boss_killzone import (
     analyze_trading_boss_killzone_symbol,
+    KillzoneProfile,
+    KillzoneScanResult,
     KillzoneWindowGate,
-    resolve_killzone_frequency,
+    KILLZONE_TIER_ACTIVE,
+    KILLZONE_TIER_SELECT,
     resolve_killzone_profile,
+    resolve_trading_boss_dual_tier,
 )
 from runtime.m15_reversal_block import M15ReversalBlockGate
 from strategy.liquidity_scalp import (
@@ -137,15 +141,15 @@ def analyze_symbol(
     signal_filter: SignalFilter,
     signal_generator: SignalGenerator,
     logger: logging.Logger,
-    killzone_profile=None,
-) -> tuple[TradeSignal | None, dict[str, AgentResult] | None, object | None, dict | None]:
+    killzone_profile: KillzoneProfile | None = None,
+) -> KillzoneScanResult:
     """Trading Boss main channel: Killzone Liquidity Sweep + OB/FVG pipeline."""
     _ = signal_generator  # killzone builds signals directly; kept for BotRuntime API
     symbol_def = resolve_symbol(symbol)
     display_symbol = symbol_def.display
     profile = killzone_profile or resolve_killzone_profile()
 
-    signal, results, filter_result, context = analyze_trading_boss_killzone_symbol(
+    scan = analyze_trading_boss_killzone_symbol(
         symbol,
         provider=provider,
         timeframe=timeframe,
@@ -154,6 +158,9 @@ def analyze_symbol(
         logger=logger,
         profile=profile,
     )
+    results = scan.results
+    filter_result = scan.primary_filter
+    context = scan.context
 
     safe_print()
     safe_print(f"Symbol: {display_symbol}")
@@ -178,10 +185,12 @@ def analyze_symbol(
         print_filter_result(display_symbol, filter_result)
         safe_print()
 
-    if signal is not None:
-        print_trade_signal(display_symbol, signal)
+    for tier_outcome in scan.tier_outcomes:
+        if tier_outcome.signal is not None:
+            safe_print(f"Tier: {tier_outcome.tier.label.upper()}")
+            print_trade_signal(display_symbol, tier_outcome.signal)
 
-    return signal, results, filter_result, context
+    return scan
 
 
 def build_bot_runtime(
@@ -196,9 +205,21 @@ def build_bot_runtime(
     scalp_provider = build_scalp_market_data_provider()
     main_provider = build_main_market_data_provider(settings)
     killzone_profile = resolve_killzone_profile(settings.trading_boss_killzone_profile)
-    killzone_frequency = resolve_killzone_frequency(settings.trading_boss_killzone_frequency)
-    killzone_window_gate = KillzoneWindowGate(
-        max_signals_per_window=killzone_frequency.max_signals_per_window,
+    dual_tier = resolve_trading_boss_dual_tier(
+        "1" if settings.trading_boss_dual_tier else "0"
+    )
+    killzone_tier_gates = (
+        {
+            KILLZONE_TIER_SELECT.label: KillzoneWindowGate.for_tier(KILLZONE_TIER_SELECT),
+            KILLZONE_TIER_ACTIVE.label: KillzoneWindowGate.for_tier(KILLZONE_TIER_ACTIVE),
+        }
+        if dual_tier
+        else {}
+    )
+    killzone_window_gate = (
+        KillzoneWindowGate.for_tier(KILLZONE_TIER_ACTIVE)
+        if dual_tier
+        else KillzoneWindowGate(max_signals_per_window=1, include_asian=False)
     )
     if settings.oanda_api_key.strip():
         logger.info(
@@ -222,17 +243,31 @@ def build_bot_runtime(
             calendar_url=settings.news_calendar_url or FOREX_FACTORY_CALENDAR_URL,
         ),
     )
-    logger.info(
-        "Main channel: Killzone profile %s (sweep=%s, HTF filter=%s, SL XAUUSD %.0f-%.0f pips, %d signal(s)/window, freq=%s%s)",
-        killzone_profile.name,
-        killzone_profile.sweep_tf,
-        killzone_profile.htf_filter_tf,
-        killzone_profile.min_sl_pips.get("XAUUSD", killzone_profile.min_sl_pips["default"]),
-        killzone_profile.max_sl_pips.get("XAUUSD", killzone_profile.max_sl_pips["default"]),
-        killzone_frequency.max_signals_per_window,
-        killzone_frequency.label,
-        ", Asian ON" if killzone_frequency.include_asian else "",
-    )
+    if dual_tier:
+        logger.info(
+            "Main channel: Trading Boss dual tier | profile %s (sweep=%s, HTF=%s, SL XAUUSD %.0f-%.0f pips)",
+            killzone_profile.name,
+            killzone_profile.sweep_tf,
+            killzone_profile.htf_filter_tf,
+            killzone_profile.min_sl_pips.get("XAUUSD", killzone_profile.min_sl_pips["default"]),
+            killzone_profile.max_sl_pips.get("XAUUSD", killzone_profile.max_sl_pips["default"]),
+        )
+        logger.info(
+            "  ACTIVE: %d/window + Asian, min conf %.0f%% | SELECT: %d/window London+NY, min conf %.0f%%, CHoCH+OB/FVG",
+            KILLZONE_TIER_ACTIVE.max_signals_per_window,
+            KILLZONE_TIER_ACTIVE.min_confidence * 100,
+            KILLZONE_TIER_SELECT.max_signals_per_window,
+            KILLZONE_TIER_SELECT.min_confidence * 100,
+        )
+    else:
+        logger.info(
+            "Main channel: Killzone profile %s (sweep=%s, HTF filter=%s, SL XAUUSD %.0f-%.0f pips)",
+            killzone_profile.name,
+            killzone_profile.sweep_tf,
+            killzone_profile.htf_filter_tf,
+            killzone_profile.min_sl_pips.get("XAUUSD", killzone_profile.min_sl_pips["default"]),
+            killzone_profile.max_sl_pips.get("XAUUSD", killzone_profile.max_sl_pips["default"]),
+        )
     logger.info(
         "Main channel: Killzone Liquidity Sweep + OB/FVG (profile %s)",
         MAIN_CHANNEL_FILTER_PROFILE.label,
@@ -399,6 +434,8 @@ def build_bot_runtime(
         dedup=dedup,
         m15_reversal_block=m15_reversal_block,
         killzone_window_gate=killzone_window_gate,
+        killzone_tier_gates=killzone_tier_gates,
+        trading_boss_dual_tier=dual_tier,
         analyze_symbol=partial(analyze_symbol, killzone_profile=killzone_profile),
         candle_limit=settings.candle_limit,
         poll_interval_seconds=poll_interval,

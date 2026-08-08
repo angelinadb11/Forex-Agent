@@ -51,6 +51,7 @@ class Settings:
     oanda_env: str = "practice"
     trading_boss_killzone_profile: str = "precision"
     trading_boss_killzone_frequency: str = "balanced"
+    trading_boss_dual_tier: bool = True
 
 
 def _parse_symbol_list(raw_value: str) -> tuple[str, ...]:
@@ -117,6 +118,8 @@ def load_settings() -> Settings:
             "TRADING_BOSS_KILLZONE_FREQUENCY",
             "balanced",
         ),
+        trading_boss_dual_tier=os.getenv("TRADING_BOSS_DUAL_TIER", "1").strip().lower()
+        in {"1", "true", "yes", "on"},
     )
 
 

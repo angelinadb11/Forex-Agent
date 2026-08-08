@@ -195,12 +195,17 @@ def format_trade_signal(
     news_warning: str | None = None,
     off_hours_warning: str | None = None,
     h4_mismatch_warning: str | None = None,
+    *,
+    tier_header: str | None = None,
 ) -> str:
     direction = resolve_signal_direction(signal)
     direction_label = format_trade_direction_label(direction)
     analysis = summarize_analysis_sentences(results or {}, direction)
 
-    lines = [
+    lines: list[str] = []
+    if tier_header:
+        lines.extend([tier_header, ""])
+    lines.extend([
         f"{symbol} {direction_label}",
         "",
         f"Вхід: {signal.entry:.2f}",
@@ -213,9 +218,33 @@ def format_trade_signal(
         f"ТФ: {format_timeframe_label(timeframe)}",
         "",
         *analysis,
-    ]
+    ])
     _append_warnings(lines, off_hours_warning, h4_mismatch_warning, news_warning)
     return "\n".join(lines)
+
+
+def format_trading_boss_trade_signal(
+    symbol: str,
+    signal: TradeSignal,
+    timeframe: str,
+    *,
+    tier_header: str,
+    results: dict[str, AgentResult] | None = None,
+    news_warning: str | None = None,
+    off_hours_warning: str | None = None,
+    h4_mismatch_warning: str | None = None,
+) -> str:
+    """Trading Boss main channel signal with tier label (Active / Select)."""
+    return format_trade_signal(
+        symbol,
+        signal,
+        timeframe,
+        results,
+        news_warning,
+        off_hours_warning,
+        h4_mismatch_warning,
+        tier_header=tier_header,
+    )
 
 
 def format_near_tp1_breakeven_warning(

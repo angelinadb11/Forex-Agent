@@ -16,6 +16,7 @@ from telegram.message_format import (
     format_scalp_trade_signal as build_scalp_trade_signal_message,
     format_premium_scalp_trade_signal as build_premium_scalp_trade_signal_message,
     format_turtle_soup_scalp_trade_signal as build_turtle_soup_scalp_trade_signal_message,
+    format_trading_boss_trade_signal as build_trading_boss_trade_signal_message,
     format_trade_signal as build_trade_signal_message,
     format_trade_update_warning as build_trade_update_warning_message,
     format_high_risk_update as build_high_risk_update_message,
@@ -288,6 +289,36 @@ class TelegramBot:
             off_hours_warning,
             h4_mismatch_warning,
         )
+
+    def send_trading_boss_signal(
+        self,
+        symbol: str,
+        signal: TradeSignal,
+        *,
+        timeframe: str,
+        tier,
+        agent_results: dict[str, AgentResult] | None = None,
+        news_warning: str | None = None,
+        off_hours_warning: str | None = None,
+        h4_mismatch_warning: str | None = None,
+    ) -> int:
+        """Format and send a Trading Boss tier signal (Active / Select)."""
+        if signal.confidence + 1e-6 < tier.telegram_min_confidence:
+            raise ValueError(
+                f"Signal confidence below {tier.telegram_min_confidence:.0%} minimum for TB {tier.label}"
+            )
+
+        message = build_trading_boss_trade_signal_message(
+            symbol,
+            signal,
+            timeframe,
+            tier_header=tier.telegram_header,
+            results=agent_results,
+            news_warning=news_warning,
+            off_hours_warning=off_hours_warning,
+            h4_mismatch_warning=h4_mismatch_warning,
+        )
+        return self.send_message(message)
 
     def send_trade_signal(
         self,

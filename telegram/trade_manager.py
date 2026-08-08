@@ -83,19 +83,32 @@ class TelegramTradeManager:
         off_hours_warning: str | None = None,
         h4_mismatch_warning: str | None = None,
         context: dict | None = None,
+        killzone_tier=None,
     ) -> ActiveTrade:
         """Send the trade signal to Telegram and store it as active."""
         message_id: int | None = None
         if self.telegram_bot is not None:
-            message_id = self.telegram_bot.send_trade_signal(
-                symbol,
-                signal,
-                timeframe=timeframe,
-                agent_results=agent_results,
-                news_warning=news_warning,
-                off_hours_warning=off_hours_warning,
-                h4_mismatch_warning=h4_mismatch_warning,
-            )
+            if killzone_tier is not None:
+                message_id = self.telegram_bot.send_trading_boss_signal(
+                    symbol,
+                    signal,
+                    timeframe=timeframe,
+                    tier=killzone_tier,
+                    agent_results=agent_results,
+                    news_warning=news_warning,
+                    off_hours_warning=off_hours_warning,
+                    h4_mismatch_warning=h4_mismatch_warning,
+                )
+            else:
+                message_id = self.telegram_bot.send_trade_signal(
+                    symbol,
+                    signal,
+                    timeframe=timeframe,
+                    agent_results=agent_results,
+                    news_warning=news_warning,
+                    off_hours_warning=off_hours_warning,
+                    h4_mismatch_warning=h4_mismatch_warning,
+                )
 
         trade = ActiveTrade.from_signal(
             symbol,

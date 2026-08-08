@@ -18,12 +18,9 @@ from tracking.console import safe_print
 from strategy.scalp_mode import SCALP_TIMEFRAME, is_scalp_enabled
 from strategy.sweep_fvg_scalp import SWEEP_FVG_TIMEFRAME, is_sweep_fvg_scalp_enabled
 from strategy.turtle_soup_scalp import TURTLE_SOUP_TIMEFRAME, is_turtle_soup_scalp_enabled
-from strategy.trading_boss_killzone import KillzoneWindowGate
+from strategy.trading_boss_killzone import KillzoneScanResult, KillzoneTier, KillzoneWindowGate
 
-AnalyzeSymbolFn = Callable[
-    ...,
-    tuple[TradeSignal | None, dict[str, AgentResult] | None, FilterResult | None, dict | None],
-]
+AnalyzeSymbolFn = Callable[..., KillzoneScanResult]
 AnalyzeScalpFn = Callable[..., tuple[TradeSignal | None, dict | None, object]]
 PublishScalpFn = Callable[..., ActiveTrade]
 
@@ -50,6 +47,8 @@ class BotRuntime:
         dedup: SignalDedupGate,
         m15_reversal_block: M15ReversalBlockGate | None = None,
         killzone_window_gate: KillzoneWindowGate | None = None,
+        killzone_tier_gates: dict[str, KillzoneWindowGate] | None = None,
+        trading_boss_dual_tier: bool = True,
         analyze_symbol: AnalyzeSymbolFn,
         candle_limit: int,
         poll_interval_seconds: float = 60.0,
@@ -85,6 +84,8 @@ class BotRuntime:
         self.dedup = dedup
         self.m15_reversal_block = m15_reversal_block
         self.killzone_window_gate = killzone_window_gate or KillzoneWindowGate()
+        self.killzone_tier_gates = killzone_tier_gates or {}
+        self.trading_boss_dual_tier = trading_boss_dual_tier
         self.analyze_symbol = analyze_symbol
         self.candle_limit = candle_limit
         self.poll_interval_seconds = poll_interval_seconds
@@ -257,7 +258,7 @@ class BotRuntime:
                 continue
 
             try:
-                signal, results, filter_result, context = self.analyze_symbol(
+                scan = self.analyze_symbol(
                     symbol,
                     provider=self.provider,
                     timeframe=self.timeframe,
@@ -274,7 +275,11 @@ class BotRuntime:
                 )
                 continue
 
-            if signal is None or results is None or filter_result is None:
+            results = scan.results
+            filter_result = scan.primary_filter
+            context = scan.context
+
+            if not scan.approved_tiers:
                 if filter_result is not None and not filter_result.approved:
                     self.logger.info(
                         "Main scan skipped for %s: %s",
@@ -283,49 +288,78 @@ class BotRuntime:
                     )
                 continue
 
-            decision = self.dedup.can_publish(symbol, signal, self._open_symbols())
-            if not decision.allowed:
-                self.logger.info(
-                    "Signal skipped for %s: %s",
-                    display_symbol,
-                    decision.reason,
-                )
-                continue
+            published = False
+            for tier_outcome in scan.approved_tiers:
+                signal = tier_outcome.signal
+                if signal is None or results is None or tier_outcome.filter_result is None:
+                    continue
 
-            scan_ts = context.get("timestamp") if context else None
-            slot_ok, slot_reason = self.killzone_window_gate.can_take(scan_ts)
-            if not slot_ok:
-                self.logger.info(
-                    "Main scan skipped for %s: %s",
-                    display_symbol,
-                    slot_reason,
-                )
-                continue
-
-            if self.m15_reversal_block is not None:
-                block_decision = self.m15_reversal_block.can_publish(
-                    symbol,
-                    signal,
-                    self.timeframe,
-                )
-                if not block_decision.allowed:
+                decision = self.dedup.can_publish(symbol, signal, self._open_symbols())
+                if not decision.allowed:
                     self.logger.info(
-                        "Signal skipped for %s: %s",
+                        "Signal skipped for %s [%s]: %s",
                         display_symbol,
-                        block_decision.reason,
+                        tier_outcome.tier.label,
+                        decision.reason,
                     )
                     continue
 
-            self._publish_trade(
-                symbol,
-                signal,
-                results=results,
-                filter_result=filter_result,
-                context=context,
-            )
-            self.dedup.record_published(symbol, signal)
-            self.killzone_window_gate.record(scan_ts)
-            self.logger.info("Signal published for %s", display_symbol)
+                scan_ts = context.get("timestamp") if context else None
+                tier_gate = self.killzone_tier_gates.get(tier_outcome.tier.label)
+                if tier_gate is not None:
+                    slot_ok, slot_reason = tier_gate.can_take(scan_ts)
+                else:
+                    slot_ok, slot_reason = self.killzone_window_gate.can_take(scan_ts)
+                if not slot_ok:
+                    self.logger.info(
+                        "Main scan skipped for %s [%s]: %s",
+                        display_symbol,
+                        tier_outcome.tier.label,
+                        slot_reason,
+                    )
+                    continue
+
+                if self.m15_reversal_block is not None:
+                    block_decision = self.m15_reversal_block.can_publish(
+                        symbol,
+                        signal,
+                        self.timeframe,
+                    )
+                    if not block_decision.allowed:
+                        self.logger.info(
+                            "Signal skipped for %s [%s]: %s",
+                            display_symbol,
+                            tier_outcome.tier.label,
+                            block_decision.reason,
+                        )
+                        continue
+
+                self._publish_trade(
+                    symbol,
+                    signal,
+                    results=results,
+                    filter_result=tier_outcome.filter_result,
+                    context=context,
+                    killzone_tier=tier_outcome.tier,
+                )
+                self.dedup.record_published(symbol, signal)
+                if tier_gate is not None:
+                    tier_gate.record(scan_ts)
+                else:
+                    self.killzone_window_gate.record(scan_ts)
+                self.logger.info(
+                    "Signal published for %s [%s]",
+                    display_symbol,
+                    tier_outcome.tier.label,
+                )
+                published = True
+                break
+
+            if not published and scan.approved_tiers:
+                self.logger.info(
+                    "Main scan tiers blocked for %s after filters/dedup/slots",
+                    display_symbol,
+                )
 
     def _scan_scalp_all_symbols(self) -> None:
         if self.analyze_scalp_fn is None:
@@ -579,6 +613,7 @@ class BotRuntime:
         results: dict[str, AgentResult],
         filter_result: FilterResult,
         context: dict | None = None,
+        killzone_tier: KillzoneTier | None = None,
     ) -> ActiveTrade:
         agents_agreement = format_agents_agreement(
             results,
@@ -586,17 +621,20 @@ class BotRuntime:
             config=self.signal_filter.decision_config,
         )
         if self.publish_signal_fn is not None:
-            return self.publish_signal_fn(
-                symbol,
-                signal,
-                timeframe=self.main_killzone_timeframe,
-                agent_results=results,
-                agents_agreement=agents_agreement,
-                news_warning=filter_result.news_warning,
-                off_hours_warning=filter_result.off_hours_warning,
-                h4_mismatch_warning=filter_result.h4_mismatch_warning,
-                context=context,
-            )
+            publish_kwargs = {
+                "symbol": symbol,
+                "signal": signal,
+                "timeframe": self.main_killzone_timeframe,
+                "agent_results": results,
+                "agents_agreement": agents_agreement,
+                "news_warning": filter_result.news_warning,
+                "off_hours_warning": filter_result.off_hours_warning,
+                "h4_mismatch_warning": filter_result.h4_mismatch_warning,
+                "context": context,
+            }
+            if killzone_tier is not None:
+                publish_kwargs["killzone_tier"] = killzone_tier
+            return self.publish_signal_fn(**publish_kwargs)
 
         trade = ActiveTrade.from_signal(
             symbol,

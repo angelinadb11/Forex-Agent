@@ -199,6 +199,59 @@ def resolve_killzone_frequency(frequency: str | None = None) -> KillzoneFrequenc
     return KillzoneFrequencySettings("balanced", 1, False)
 
 
+def resolve_trading_boss_dual_tier(enabled: str | None = None) -> bool:
+    raw = (enabled or os.getenv("TRADING_BOSS_DUAL_TIER", "1")).strip().lower()
+    return raw in {"1", "true", "yes", "on"}
+
+
+@dataclass(frozen=True)
+class KillzoneTier:
+    """Trading Boss signal tier (main channel only)."""
+
+    label: str
+    telegram_header: str
+    max_signals_per_window: int
+    include_asian: bool
+    min_confidence: float
+    require_strong_choch: bool
+    require_ob_fvg_zone: bool
+    require_bias_alignment: bool
+    telegram_min_confidence: float
+
+
+KILLZONE_TIER_ACTIVE = KillzoneTier(
+    label="active",
+    telegram_header="🔥 TRADING BOSS ACTIVE",
+    max_signals_per_window=2,
+    include_asian=True,
+    min_confidence=0.42,
+    require_strong_choch=False,
+    require_ob_fvg_zone=False,
+    require_bias_alignment=False,
+    telegram_min_confidence=0.42,
+)
+
+KILLZONE_TIER_SELECT = KillzoneTier(
+    label="select",
+    telegram_header="💎 TRADING BOSS SELECT",
+    max_signals_per_window=1,
+    include_asian=False,
+    min_confidence=0.55,
+    require_strong_choch=True,
+    require_ob_fvg_zone=True,
+    require_bias_alignment=True,
+    telegram_min_confidence=0.55,
+)
+
+
+def resolve_killzone_tiers(*, dual_tier: bool | None = None) -> tuple[KillzoneTier, ...]:
+    if dual_tier if dual_tier is not None else resolve_trading_boss_dual_tier():
+        return (KILLZONE_TIER_SELECT, KILLZONE_TIER_ACTIVE)
+    return (KILLZONE_TIER_ACTIVE,) if resolve_killzone_frequency().label == "daily" else (
+        KILLZONE_TIER_SELECT,
+    )
+
+
 def get_killzone_windows(*, include_asian: bool | None = None) -> tuple[KillzoneWindow, ...]:
     if include_asian is None:
         include_asian = resolve_killzone_frequency().include_asian
@@ -238,6 +291,8 @@ class StructureSetup:
     zone_kind: ZoneKind
     confidence: float
     reason: str
+    choch_confirmed: bool = False
+    choch_only: bool = False
 
 
 @dataclass(frozen=True)
@@ -271,28 +326,52 @@ def _window_contains(ts: datetime, window: KillzoneWindow) -> bool:
     return start <= current < end
 
 
-def active_killzone(ts: datetime | None) -> KillzoneWindow | None:
+def active_killzone(
+    ts: datetime | None,
+    *,
+    include_asian: bool | None = None,
+) -> KillzoneWindow | None:
     if ts is None:
         return None
-    for window in get_killzone_windows():
+    for window in get_killzone_windows(include_asian=include_asian):
         if _window_contains(ts, window):
             return window
     return None
 
 
-def is_killzone_session(ts: datetime | None) -> tuple[bool, str]:
-    window = active_killzone(ts)
+def active_killzone_for_tier(ts: datetime | None, tier: KillzoneTier) -> KillzoneWindow | None:
+    return active_killzone(ts, include_asian=tier.include_asian)
+
+
+def is_killzone_session(
+    ts: datetime | None,
+    *,
+    include_asian: bool | None = None,
+) -> tuple[bool, str]:
+    window = active_killzone(ts, include_asian=include_asian)
     if window is None:
-        freq = resolve_killzone_frequency()
-        if freq.include_asian:
+        if include_asian if include_asian is not None else resolve_killzone_frequency().include_asian:
             return False, "поза Killzone (Asia 03:00–06:00 / London 09:00–11:00 / NY 14:30–16:30 Kyiv)"
         return False, "поза Killzone (London 09:00–11:00 / NY 14:30–16:30 Kyiv)"
     return True, f"{window.label} Killzone активна"
 
 
-def killzone_window_key(ts: datetime | None) -> tuple[str, str] | None:
-    """Unique slot per calendar day and Killzone window (London/NY)."""
-    window = active_killzone(ts)
+def is_killzone_session_for_tier(ts: datetime | None, tier: KillzoneTier) -> tuple[bool, str]:
+    return is_killzone_session(ts, include_asian=tier.include_asian)
+
+
+def is_in_trading_boss_killzone_union(ts: datetime | None) -> bool:
+    """True when inside any tier window (Asian + London + NY)."""
+    return active_killzone(ts, include_asian=True) is not None
+
+
+def killzone_window_key(
+    ts: datetime | None,
+    *,
+    include_asian: bool | None = None,
+) -> tuple[str, str] | None:
+    """Unique slot per calendar day and Killzone window."""
+    window = active_killzone(ts, include_asian=include_asian)
     if window is None or ts is None:
         return None
     return (_utc(ts).date().isoformat(), window.label)
@@ -303,22 +382,32 @@ class KillzoneWindowGate:
     """Limit main-channel signals per Killzone window per day."""
 
     max_signals_per_window: int = 1
+    include_asian: bool = False
+    tier_label: str = "main"
     _counts: dict[tuple[str, str], int] = field(default_factory=dict)
 
+    @classmethod
+    def for_tier(cls, tier: KillzoneTier) -> KillzoneWindowGate:
+        return cls(
+            max_signals_per_window=tier.max_signals_per_window,
+            include_asian=tier.include_asian,
+            tier_label=tier.label,
+        )
+
     def can_take(self, ts: datetime | None) -> tuple[bool, str]:
-        key = killzone_window_key(ts)
+        key = killzone_window_key(ts, include_asian=self.include_asian)
         if key is None:
-            return False, "outside killzone"
+            return False, f"TB {self.tier_label}: поза Killzone"
         used = self._counts.get(key, 0)
         if used >= self.max_signals_per_window:
             return (
                 False,
-                f"Killzone slot full ({key[1]} {key[0]}, {used}/{self.max_signals_per_window})",
+                f"TB {self.tier_label} slot full ({key[1]} {key[0]}, {used}/{self.max_signals_per_window})",
             )
         return True, "ok"
 
     def record(self, ts: datetime | None) -> None:
-        key = killzone_window_key(ts)
+        key = killzone_window_key(ts, include_asian=self.include_asian)
         if key is not None:
             self._counts[key] = self._counts.get(key, 0) + 1
 
@@ -619,6 +708,8 @@ def find_structure_setup(
             zone_kind="OB",
             confidence=0.48,
             reason=f"CHoCH-only {sweep.direction.value}, no OB/FVG",
+            choch_confirmed=choch_ok,
+            choch_only=True,
         )
 
     zone_low, zone_high, zone_kind, base = max(zones, key=lambda item: item[3])
@@ -646,6 +737,8 @@ def find_structure_setup(
         zone_kind=zone_kind,
         confidence=round(max(0.2, min(0.95, confidence)), 2),
         reason=reason,
+        choch_confirmed=choch_ok,
+        choch_only=False,
     )
 
 
@@ -766,7 +859,11 @@ def run_killzone_agents(
     timestamp: datetime | None,
     setup: KillzoneSetup | None,
 ) -> dict[str, AgentResult]:
-    in_kz, kz_reason = is_killzone_session(timestamp)
+    in_kz, kz_reason = (
+        is_killzone_session(timestamp, include_asian=True)
+        if resolve_trading_boss_dual_tier()
+        else is_killzone_session(timestamp)
+    )
     session_conf = 0.85 if in_kz else 0.20
     session_dir = setup.direction if setup else Direction.NEUTRAL
 
@@ -863,6 +960,125 @@ def compute_killzone_decision(
         confidence = max(0.0, confidence - 0.20)
 
     return direction, round(confidence, 2)
+
+
+def evaluate_killzone_tier_filter(
+    *,
+    tier: KillzoneTier,
+    signal_filter: SignalFilter,
+    results: dict[str, AgentResult],
+    setup: KillzoneSetup | None,
+    direction: Direction,
+    confidence: float,
+    symbol: str,
+    timestamp: datetime | None,
+    bias: BiasAnalysis,
+) -> FilterResult:
+    tier_tag = tier.label.upper()
+    if direction == Direction.NEUTRAL:
+        return FilterResult(
+            approved=False,
+            direction=Direction.NEUTRAL,
+            confidence=confidence,
+            message=f"NO TRADE [{tier_tag}]: neutral killzone decision",
+        )
+
+    in_kz, kz_msg = is_killzone_session_for_tier(timestamp, tier)
+    if not in_kz:
+        return FilterResult(
+            approved=False,
+            direction=direction,
+            confidence=confidence,
+            message=f"NO TRADE [{tier_tag}]: {kz_msg}",
+        )
+
+    if setup is None:
+        return FilterResult(
+            approved=False,
+            direction=direction,
+            confidence=confidence,
+            message=f"NO TRADE [{tier_tag}]: setup не зібрано",
+        )
+
+    if results["liquidity"].direction != direction:
+        return FilterResult(
+            approved=False,
+            direction=direction,
+            confidence=confidence,
+            message=f"NO TRADE [{tier_tag}]: liquidity sweep не підтверджує напрямок",
+        )
+    if results["structure"].direction != direction:
+        return FilterResult(
+            approved=False,
+            direction=direction,
+            confidence=confidence,
+            message=f"NO TRADE [{tier_tag}]: structure (CHoCH/OB/FVG) не підтверджує напрямок",
+        )
+
+    if tier.require_strong_choch and not setup.structure.choch_confirmed:
+        return FilterResult(
+            approved=False,
+            direction=direction,
+            confidence=confidence,
+            message=f"NO TRADE [{tier_tag}]: CHoCH не підтверджено (потрібен сильний setup)",
+        )
+
+    if tier.require_ob_fvg_zone and setup.structure.choch_only:
+        return FilterResult(
+            approved=False,
+            direction=direction,
+            confidence=confidence,
+            message=f"NO TRADE [{tier_tag}]: потрібен OB/FVG, не CHoCH-only",
+        )
+
+    if tier.require_bias_alignment and bias.direction not in (Direction.NEUTRAL, direction):
+        return FilterResult(
+            approved=False,
+            direction=direction,
+            confidence=confidence,
+            message=f"NO TRADE [{tier_tag}]: HTF bias не в напрямку угоди",
+        )
+
+    min_conf = tier.min_confidence
+    if tier.label == "active":
+        min_conf = resolve_killzone_min_confidence(
+            symbol,
+            default=resolve_min_confidence(
+                symbol,
+                default=signal_filter.min_confidence,
+            ),
+        )
+    if confidence + 1e-6 < min_conf:
+        return FilterResult(
+            approved=False,
+            direction=direction,
+            confidence=confidence,
+            message=(
+                f"NO TRADE [{tier_tag}]: confidence {confidence:.2f} "
+                f"below minimum {min_conf:.2f}"
+            ),
+        )
+
+    news_warning = None
+    if signal_filter.news_gate is not None and timestamp is not None:
+        news = signal_filter.news_gate.evaluate(symbol, timestamp)
+        if news.action == NewsAction.BLOCK:
+            return FilterResult(
+                approved=False,
+                direction=direction,
+                confidence=confidence,
+                message=f"NO TRADE [{tier_tag}]: high-impact news window ({news.event.name if news.event else 'macro'})",
+            )
+        if news.action == NewsAction.WARN:
+            news_warning = news.message
+
+    return FilterResult(
+        approved=True,
+        direction=direction,
+        confidence=confidence,
+        message=f"TB {tier_tag} approved ({kz_msg})",
+        news_warning=news_warning,
+    )
 
 
 def evaluate_killzone_filter(
@@ -968,6 +1184,32 @@ def build_killzone_signal(
     return align_trade_signal_direction(signal)
 
 
+@dataclass(frozen=True)
+class KillzoneTierOutcome:
+    tier: KillzoneTier
+    filter_result: FilterResult
+    signal: TradeSignal | None
+
+
+@dataclass(frozen=True)
+class KillzoneScanResult:
+    results: dict[str, AgentResult] | None
+    context: dict | None
+    setup: KillzoneSetup | None
+    direction: Direction
+    confidence: float
+    tier_outcomes: tuple[KillzoneTierOutcome, ...]
+    primary_filter: FilterResult
+
+    @property
+    def approved_tiers(self) -> tuple[KillzoneTierOutcome, ...]:
+        return tuple(
+            outcome
+            for outcome in self.tier_outcomes
+            if outcome.filter_result.approved and outcome.signal is not None
+        )
+
+
 def analyze_trading_boss_killzone_symbol(
     symbol: str,
     *,
@@ -977,7 +1219,8 @@ def analyze_trading_boss_killzone_symbol(
     signal_filter: SignalFilter,
     logger: logging.Logger,
     profile: KillzoneProfile | None = None,
-) -> tuple[TradeSignal | None, dict[str, AgentResult] | None, FilterResult | None, dict | None]:
+    dual_tier: bool | None = None,
+) -> KillzoneScanResult:
     """Main-channel analysis: Liquidity Sweep + OB/FVG in Killzones."""
     killzone_profile = profile or resolve_killzone_profile()
     symbol_def = resolve_symbol(symbol)
@@ -998,16 +1241,19 @@ def analyze_trading_boss_killzone_symbol(
         )
     except requests.RequestException as exc:
         logger.error("Market data fetch failed for %s: %s", display_symbol, exc)
-        return (
-            None,
-            None,
-            FilterResult(
+        return KillzoneScanResult(
+            results=None,
+            context=None,
+            setup=None,
+            direction=Direction.NEUTRAL,
+            confidence=0.0,
+            tier_outcomes=(),
+            primary_filter=FilterResult(
                 approved=False,
                 direction=Direction.NEUTRAL,
                 confidence=0.0,
                 message=f"NO TRADE: market data unavailable ({exc})",
             ),
-            None,
         )
     timestamp = context_sweep.get("timestamp")
     if isinstance(timestamp, datetime):
@@ -1054,7 +1300,15 @@ def analyze_trading_boss_killzone_symbol(
             confidence=0.0,
             message="NO TRADE: insufficient HTF/LTF data",
         )
-        return None, results, filter_result, context
+        return KillzoneScanResult(
+            results=results,
+            context=context,
+            setup=None,
+            direction=Direction.NEUTRAL,
+            confidence=0.0,
+            tier_outcomes=(),
+            primary_filter=filter_result,
+        )
 
     bias = analyze_bias(h1_candles, h4_candles)
     sweep_timestamps = build_timestamps(sweep_candles)
@@ -1107,16 +1361,59 @@ def analyze_trading_boss_killzone_symbol(
         timestamp=timestamp,
         setup=setup,
     )
-    in_kz, _ = is_killzone_session(timestamp)
+    use_dual_tier = dual_tier if dual_tier is not None else resolve_trading_boss_dual_tier()
+    in_kz = (
+        is_in_trading_boss_killzone_union(timestamp)
+        if use_dual_tier
+        else is_killzone_session(timestamp)[0]
+    )
     direction, confidence = compute_killzone_decision(results, bias=bias, in_killzone=in_kz)
 
-    filter_result = evaluate_killzone_filter(
-        signal_filter=signal_filter,
-        results=results,
+    tier_outcomes: list[KillzoneTierOutcome] = []
+    for tier in resolve_killzone_tiers(dual_tier=use_dual_tier):
+        tier_filter = evaluate_killzone_tier_filter(
+            tier=tier,
+            signal_filter=signal_filter,
+            results=results,
+            setup=setup,
+            direction=direction,
+            confidence=confidence,
+            symbol=display_symbol,
+            timestamp=timestamp,
+            bias=bias,
+        )
+        tier_signal = None
+        if tier_filter.approved and setup is not None:
+            tier_signal = build_killzone_signal(
+                setup,
+                display_symbol,
+                confidence=tier_filter.confidence,
+            )
+            logger.info(
+                "%s | SIGNAL [%s] | %s | entry=%.2f sl=%.2f tp1=%.2f tp2=%.2f tp3=%.2f | %s",
+                display_symbol,
+                tier.label.upper(),
+                tier_signal.direction.value,
+                tier_signal.entry,
+                tier_signal.stop_loss,
+                tier_signal.tp1,
+                tier_signal.tp2,
+                tier_signal.tp3,
+                tier_signal.reason,
+            )
+        tier_outcomes.append(
+            KillzoneTierOutcome(
+                tier=tier,
+                filter_result=tier_filter,
+                signal=tier_signal,
+            )
+        )
+
+    primary_filter = tier_outcomes[0].filter_result if tier_outcomes else FilterResult(
+        approved=False,
         direction=direction,
         confidence=confidence,
-        symbol=display_symbol,
-        timestamp=timestamp,
+        message="NO TRADE: no tier configured",
     )
 
     for name, result in results.items():
@@ -1135,19 +1432,12 @@ def analyze_trading_boss_killzone_symbol(
         confidence,
     )
 
-    if not filter_result.approved or setup is None:
-        return None, results, filter_result, context
-
-    signal = build_killzone_signal(setup, display_symbol, confidence=filter_result.confidence)
-    logger.info(
-        "%s | SIGNAL | %s | entry=%.2f sl=%.2f tp1=%.2f tp2=%.2f tp3=%.2f | %s",
-        display_symbol,
-        signal.direction.value,
-        signal.entry,
-        signal.stop_loss,
-        signal.tp1,
-        signal.tp2,
-        signal.tp3,
-        signal.reason,
+    return KillzoneScanResult(
+        results=results,
+        context=context,
+        setup=setup,
+        direction=direction,
+        confidence=confidence,
+        tier_outcomes=tuple(tier_outcomes),
+        primary_filter=primary_filter,
     )
-    return signal, results, filter_result, context

@@ -10,18 +10,24 @@ from strategy.trading_boss_killzone import (
     BiasAnalysis,
     RefLevel,
     SweepEvent,
+    StructureSetup,
     _premium_discount,
     active_killzone,
     compute_killzone_decision,
     detect_liquidity_sweep,
     evaluate_killzone_filter,
+    evaluate_killzone_tier_filter,
     is_killzone_session,
+    KillzoneSetup,
     KillzoneWindowGate,
     KILLZONE_PROFILE_PRECISION,
     KILLZONE_PROFILE_STANDARD,
+    KILLZONE_TIER_ACTIVE,
+    KILLZONE_TIER_SELECT,
     get_killzone_windows,
     resolve_killzone_frequency,
     resolve_killzone_profile,
+    resolve_killzone_tiers,
     run_killzone_agents,
 )
 from strategy.signal_filter import SignalFilter
@@ -242,6 +248,113 @@ class KillzoneFilterTests(unittest.TestCase):
         from strategy.trading_boss_killzone import _window_contains
 
         self.assertTrue(any(_window_contains(_ts(1, 0), window) for window in windows))
+
+    def test_dual_tier_presets(self) -> None:
+        tiers = resolve_killzone_tiers(dual_tier=True)
+        self.assertEqual([tier.label for tier in tiers], ["select", "active"])
+        self.assertEqual(KILLZONE_TIER_ACTIVE.max_signals_per_window, 2)
+        self.assertTrue(KILLZONE_TIER_ACTIVE.include_asian)
+        self.assertEqual(KILLZONE_TIER_SELECT.max_signals_per_window, 1)
+        self.assertFalse(KILLZONE_TIER_SELECT.include_asian)
+
+    def test_select_tier_blocks_weak_choch_only_setup(self) -> None:
+        signal_filter = SignalFilter(news_gate=None)
+        bias = BiasAnalysis(Direction.LONG, "discount", 0.7, "bullish")
+        sweep = SweepEvent(
+            direction=Direction.LONG,
+            level=RefLevel(2000.0, "low", "pool-low"),
+            sweep_index=10,
+            sweep_extreme=1999.0,
+            reclaim_index=11,
+            wick_depth=1.0,
+            confidence=0.7,
+            reason="test sweep",
+        )
+        structure = StructureSetup(
+            direction=Direction.LONG,
+            entry=2001.0,
+            zone_low=2000.5,
+            zone_high=2001.5,
+            zone_kind="OB",
+            confidence=0.75,
+            reason="CHoCH-only long, no OB/FVG",
+            choch_confirmed=True,
+            choch_only=True,
+        )
+        setup = KillzoneSetup(
+            direction=Direction.LONG,
+            entry=2001.0,
+            stop_loss=1998.0,
+            tp1=2003.0,
+            tp2=2005.0,
+            tp3=2007.0,
+            confidence=0.75,
+            reason="test setup",
+            sweep=sweep,
+            structure=structure,
+            bias=bias,
+        )
+        results = run_killzone_agents(
+            bias=bias,
+            sweep=sweep,
+            structure=structure,
+            timestamp=_ts(7, 0),
+            setup=setup,
+        )
+        active = evaluate_killzone_tier_filter(
+            tier=KILLZONE_TIER_ACTIVE,
+            signal_filter=signal_filter,
+            results=results,
+            setup=setup,
+            direction=Direction.LONG,
+            confidence=0.65,
+            symbol="XAUUSD",
+            timestamp=_ts(7, 0),
+            bias=bias,
+        )
+        select = evaluate_killzone_tier_filter(
+            tier=KILLZONE_TIER_SELECT,
+            signal_filter=signal_filter,
+            results=results,
+            setup=setup,
+            direction=Direction.LONG,
+            confidence=0.65,
+            symbol="XAUUSD",
+            timestamp=_ts(7, 0),
+            bias=bias,
+        )
+        self.assertTrue(active.approved)
+        self.assertFalse(select.approved)
+        self.assertIn("OB/FVG", select.message)
+
+    def test_select_tier_blocks_asian_session(self) -> None:
+        signal_filter = SignalFilter(news_gate=None)
+        bias = BiasAnalysis(Direction.LONG, "discount", 0.7, "bullish")
+        results = run_killzone_agents(
+            bias=bias,
+            sweep=None,
+            structure=None,
+            timestamp=_ts(1, 0),
+            setup=None,
+        )
+        outcome = evaluate_killzone_tier_filter(
+            tier=KILLZONE_TIER_SELECT,
+            signal_filter=signal_filter,
+            results=results,
+            setup=None,
+            direction=Direction.LONG,
+            confidence=0.7,
+            symbol="XAUUSD",
+            timestamp=_ts(1, 0),
+            bias=bias,
+        )
+        self.assertFalse(outcome.approved)
+        self.assertIn("SELECT", outcome.message)
+
+    def test_tier_gate_factory(self) -> None:
+        gate = KillzoneWindowGate.for_tier(KILLZONE_TIER_ACTIVE)
+        self.assertEqual(gate.max_signals_per_window, 2)
+        self.assertTrue(gate.include_asian)
 
 
 if __name__ == "__main__":

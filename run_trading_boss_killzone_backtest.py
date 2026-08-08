@@ -24,8 +24,10 @@ from strategy.trading_boss_killzone import (
     detect_liquidity_sweep,
     evaluate_killzone_filter,
     find_structure_setup,
+    get_killzone_windows,
     is_fresh_sweep,
     KillzoneWindowGate,
+    resolve_killzone_frequency,
     resolve_killzone_profile,
     run_killzone_agents,
 )
@@ -55,6 +57,7 @@ class KillzoneBacktestStats:
     period_start: str = ""
     period_end: str = ""
     profile_name: str = "precision"
+    frequency_label: str = "balanced"
 
     @property
     def total_signals(self) -> int:
@@ -248,16 +251,23 @@ def run_backtest(
     h1_candles: list[dict],
     h4_candles: list[dict],
     profile_name: str | None = None,
+    frequency_name: str | None = None,
     days: int = DAYS,
     warmup: int = WARMUP_M1,
     step: int = 5,
 ) -> KillzoneBacktestStats:
     display = resolve_symbol(symbol).display
     profile = resolve_killzone_profile(profile_name)
+    frequency = resolve_killzone_frequency(frequency_name)
     signal_filter = SignalFilter(news_gate=None)
     simulator = TradeSimulator()
-    stats = KillzoneBacktestStats(profile_name=profile.name)
-    killzone_gate = KillzoneWindowGate()
+    stats = KillzoneBacktestStats(
+        profile_name=profile.name,
+        frequency_label=frequency.label,
+    )
+    killzone_gate = KillzoneWindowGate(
+        max_signals_per_window=frequency.max_signals_per_window,
+    )
 
     m1_timestamps = build_timestamps(m1_candles)
     m5_timestamps = build_timestamps(m5_candles)
@@ -269,10 +279,17 @@ def run_backtest(
     test_bars = days * M1_PER_DAY
     scan_start = max(warmup, len(m1_candles) - test_bars - 1)
     scan_end = len(m1_candles) - 2
+    killzone_windows = get_killzone_windows(include_asian=frequency.include_asian)
+
+    def _in_killzone(ts) -> bool:
+        from strategy.trading_boss_killzone import _window_contains
+
+        return any(_window_contains(ts, window) for window in killzone_windows)
+
     killzone_indices = [
         index
         for index in range(scan_start, scan_end + 1, max(1, step))
-        if active_killzone(m1_timestamps[index]) is not None
+        if _in_killzone(m1_timestamps[index])
     ]
     print(f"Killzone bars to scan: {len(killzone_indices)} (step={max(1, step)} M1)", flush=True)
     open_until = -1
@@ -377,11 +394,11 @@ def download_dataset(
     return m1, m5, h1, h4
 
 
-def print_report(stats: KillzoneBacktestStats, *, days: int) -> None:
+def print_report(stats: KillzoneBacktestStats, *, days: int, frequency: str = "balanced") -> None:
     pip = pip_size_for_symbol("XAUUSD") or 0.1
     print()
     print(f"=== Trading Boss Killzone Backtest (XAUUSD, {days} days) ===")
-    print(f"Profile: {stats.profile_name} | partial TP 50/25/25 | London/NY Killzone only")
+    print(f"Profile: {stats.profile_name} | freq={stats.frequency_label} | partial TP 50/25/25")
     print(f"Data: Binance XAUUSDT | period {stats.period_start[:16]} -> {stats.period_end[:16]}")
     print()
     print(f"Killzone M1 bars scanned:   {stats.bars_scanned}")
@@ -423,6 +440,12 @@ def main() -> None:
     parser.add_argument("--days", type=int, default=DAYS)
     parser.add_argument("--profile", default="precision", choices=["precision", "standard"])
     parser.add_argument(
+        "--frequency",
+        default="balanced",
+        choices=["balanced", "daily"],
+        help="balanced=1 signal/window; daily=2/window + Asian killzone",
+    )
+    parser.add_argument(
         "--step",
         type=int,
         default=5,
@@ -444,11 +467,12 @@ def main() -> None:
         h1_candles=h1,
         h4_candles=h4,
         profile_name=args.profile,
+        frequency_name=args.frequency,
         days=args.days,
         warmup=WARMUP_M1,
         step=args.step,
     )
-    print_report(stats, days=args.days)
+    print_report(stats, days=args.days, frequency=args.frequency)
 
 
 if __name__ == "__main__":

@@ -13,6 +13,8 @@ from runtime import BotRuntime, SignalDedupGate
 from signal_generator import SignalGenerator, TradeSignal
 from strategy.trading_boss_killzone import (
     analyze_trading_boss_killzone_symbol,
+    KillzoneWindowGate,
+    resolve_killzone_frequency,
     resolve_killzone_profile,
 )
 from runtime.m15_reversal_block import M15ReversalBlockGate
@@ -194,6 +196,10 @@ def build_bot_runtime(
     scalp_provider = build_scalp_market_data_provider()
     main_provider = build_main_market_data_provider(settings)
     killzone_profile = resolve_killzone_profile(settings.trading_boss_killzone_profile)
+    killzone_frequency = resolve_killzone_frequency(settings.trading_boss_killzone_frequency)
+    killzone_window_gate = KillzoneWindowGate(
+        max_signals_per_window=killzone_frequency.max_signals_per_window,
+    )
     if settings.oanda_api_key.strip():
         logger.info(
             "Main channel XAUUSD pricing: OANDA v20 (%s)",
@@ -217,12 +223,15 @@ def build_bot_runtime(
         ),
     )
     logger.info(
-        "Main channel: Killzone profile %s (sweep=%s, HTF filter=%s, SL XAUUSD %.0f-%.0f pips, 1 signal/window)",
+        "Main channel: Killzone profile %s (sweep=%s, HTF filter=%s, SL XAUUSD %.0f-%.0f pips, %d signal(s)/window, freq=%s%s)",
         killzone_profile.name,
         killzone_profile.sweep_tf,
         killzone_profile.htf_filter_tf,
         killzone_profile.min_sl_pips.get("XAUUSD", killzone_profile.min_sl_pips["default"]),
         killzone_profile.max_sl_pips.get("XAUUSD", killzone_profile.max_sl_pips["default"]),
+        killzone_frequency.max_signals_per_window,
+        killzone_frequency.label,
+        ", Asian ON" if killzone_frequency.include_asian else "",
     )
     logger.info(
         "Main channel: Killzone Liquidity Sweep + OB/FVG (profile %s)",
@@ -389,6 +398,7 @@ def build_bot_runtime(
         monitor=monitor,
         dedup=dedup,
         m15_reversal_block=m15_reversal_block,
+        killzone_window_gate=killzone_window_gate,
         analyze_symbol=partial(analyze_symbol, killzone_profile=killzone_profile),
         candle_limit=settings.candle_limit,
         poll_interval_seconds=poll_interval,

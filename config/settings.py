@@ -50,6 +50,7 @@ class Settings:
     oanda_account_id: str = ""
     oanda_env: str = "practice"
     trading_boss_killzone_profile: str = "precision"
+    trading_boss_killzone_frequency: str = "balanced"
 
 
 def _parse_symbol_list(raw_value: str) -> tuple[str, ...]:
@@ -111,6 +112,10 @@ def load_settings() -> Settings:
         trading_boss_killzone_profile=os.getenv(
             "TRADING_BOSS_KILLZONE_PROFILE",
             "precision",
+        ),
+        trading_boss_killzone_frequency=os.getenv(
+            "TRADING_BOSS_KILLZONE_FREQUENCY",
+            "balanced",
         ),
     )
 

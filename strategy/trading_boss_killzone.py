@@ -142,6 +142,8 @@ LONDON_KILLZONE_START = (6, 0)
 LONDON_KILLZONE_END = (8, 0)
 NY_KILLZONE_START = (11, 30)
 NY_KILLZONE_END = (13, 30)
+ASIAN_KILLZONE_START = (0, 0)
+ASIAN_KILLZONE_END = (3, 0)
 
 SWEEP_RECLAIM_BARS = 3
 SWEEP_LOOKBACK_BARS = 80
@@ -179,6 +181,32 @@ KILLZONE_WINDOWS = (
     KillzoneWindow("London", *LONDON_KILLZONE_START, *LONDON_KILLZONE_END),
     KillzoneWindow("NY", *NY_KILLZONE_START, *NY_KILLZONE_END),
 )
+
+
+@dataclass(frozen=True)
+class KillzoneFrequencySettings:
+    """Runtime frequency preset for main-channel Killzone signals."""
+
+    label: str
+    max_signals_per_window: int
+    include_asian: bool
+
+
+def resolve_killzone_frequency(frequency: str | None = None) -> KillzoneFrequencySettings:
+    key = (frequency or os.getenv("TRADING_BOSS_KILLZONE_FREQUENCY", "balanced")).strip().lower()
+    if key in {"daily", "day", "high"}:
+        return KillzoneFrequencySettings("daily", 2, True)
+    return KillzoneFrequencySettings("balanced", 1, False)
+
+
+def get_killzone_windows(*, include_asian: bool | None = None) -> tuple[KillzoneWindow, ...]:
+    if include_asian is None:
+        include_asian = resolve_killzone_frequency().include_asian
+    windows: list[KillzoneWindow] = []
+    if include_asian:
+        windows.append(KillzoneWindow("Asian", *ASIAN_KILLZONE_START, *ASIAN_KILLZONE_END))
+    windows.extend(KILLZONE_WINDOWS)
+    return tuple(windows)
 
 
 @dataclass(frozen=True)
@@ -246,7 +274,7 @@ def _window_contains(ts: datetime, window: KillzoneWindow) -> bool:
 def active_killzone(ts: datetime | None) -> KillzoneWindow | None:
     if ts is None:
         return None
-    for window in KILLZONE_WINDOWS:
+    for window in get_killzone_windows():
         if _window_contains(ts, window):
             return window
     return None
@@ -255,6 +283,9 @@ def active_killzone(ts: datetime | None) -> KillzoneWindow | None:
 def is_killzone_session(ts: datetime | None) -> tuple[bool, str]:
     window = active_killzone(ts)
     if window is None:
+        freq = resolve_killzone_frequency()
+        if freq.include_asian:
+            return False, "поза Killzone (Asia 03:00–06:00 / London 09:00–11:00 / NY 14:30–16:30 Kyiv)"
         return False, "поза Killzone (London 09:00–11:00 / NY 14:30–16:30 Kyiv)"
     return True, f"{window.label} Killzone активна"
 
@@ -269,22 +300,27 @@ def killzone_window_key(ts: datetime | None) -> tuple[str, str] | None:
 
 @dataclass
 class KillzoneWindowGate:
-    """Allow at most one main-channel signal per Killzone window per day."""
+    """Limit main-channel signals per Killzone window per day."""
 
-    _filled: set[tuple[str, str]] = field(default_factory=set)
+    max_signals_per_window: int = 1
+    _counts: dict[tuple[str, str], int] = field(default_factory=dict)
 
     def can_take(self, ts: datetime | None) -> tuple[bool, str]:
         key = killzone_window_key(ts)
         if key is None:
             return False, "outside killzone"
-        if key in self._filled:
-            return False, f"Killzone slot used ({key[1]} {key[0]})"
+        used = self._counts.get(key, 0)
+        if used >= self.max_signals_per_window:
+            return (
+                False,
+                f"Killzone slot full ({key[1]} {key[0]}, {used}/{self.max_signals_per_window})",
+            )
         return True, "ok"
 
     def record(self, ts: datetime | None) -> None:
         key = killzone_window_key(ts)
         if key is not None:
-            self._filled.add(key)
+            self._counts[key] = self._counts.get(key, 0) + 1
 
 
 def prev_day_range(

@@ -19,6 +19,8 @@ from strategy.trading_boss_killzone import (
     KillzoneWindowGate,
     KILLZONE_PROFILE_PRECISION,
     KILLZONE_PROFILE_STANDARD,
+    get_killzone_windows,
+    resolve_killzone_frequency,
     resolve_killzone_profile,
     run_killzone_agents,
 )
@@ -215,12 +217,31 @@ class KillzoneFilterTests(unittest.TestCase):
 
 
     def test_killzone_window_gate_allows_one_signal_per_window(self) -> None:
-        gate = KillzoneWindowGate()
+        gate = KillzoneWindowGate(max_signals_per_window=1)
         london = _ts(7, 0)
         self.assertTrue(gate.can_take(london)[0])
         gate.record(london)
         self.assertFalse(gate.can_take(_ts(7, 30))[0])
         self.assertTrue(gate.can_take(_ts(12, 0))[0])
+
+    def test_killzone_window_gate_daily_allows_two_per_window(self) -> None:
+        gate = KillzoneWindowGate(max_signals_per_window=2)
+        london = _ts(7, 0)
+        self.assertTrue(gate.can_take(london)[0])
+        gate.record(london)
+        self.assertTrue(gate.can_take(_ts(7, 30))[0])
+        gate.record(_ts(7, 30))
+        self.assertFalse(gate.can_take(_ts(7, 45))[0])
+
+    def test_daily_frequency_includes_asian_window(self) -> None:
+        freq = resolve_killzone_frequency("daily")
+        self.assertTrue(freq.include_asian)
+        self.assertEqual(freq.max_signals_per_window, 2)
+        windows = get_killzone_windows(include_asian=True)
+        self.assertEqual(windows[0].label, "Asian")
+        from strategy.trading_boss_killzone import _window_contains
+
+        self.assertTrue(any(_window_contains(_ts(1, 0), window) for window in windows))
 
 
 if __name__ == "__main__":

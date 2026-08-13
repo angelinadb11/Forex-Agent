@@ -334,14 +334,24 @@ class BotRuntime:
                         )
                         continue
 
-                self._publish_trade(
-                    symbol,
-                    signal,
-                    results=results,
-                    filter_result=tier_outcome.filter_result,
-                    context=context,
-                    killzone_tier=tier_outcome.tier,
-                )
+                try:
+                    self._publish_trade(
+                        symbol,
+                        signal,
+                        results=results,
+                        filter_result=tier_outcome.filter_result,
+                        context=context,
+                        killzone_tier=tier_outcome.tier,
+                    )
+                except Exception as exc:
+                    self.logger.exception(
+                        "Main signal publish failed for %s [%s]: %s",
+                        display_symbol,
+                        tier_outcome.tier.label,
+                        exc,
+                    )
+                    continue
+
                 self.dedup.record_published(symbol, signal)
                 if tier_gate is not None:
                     tier_gate.record(scan_ts)
@@ -615,11 +625,14 @@ class BotRuntime:
         context: dict | None = None,
         killzone_tier: KillzoneTier | None = None,
     ) -> ActiveTrade:
-        agents_agreement = format_agents_agreement(
-            results,
-            filter_result.direction,
-            config=self.signal_filter.decision_config,
-        )
+        if killzone_tier is not None:
+            agents_agreement = f"TB-{killzone_tier.label.upper()}"
+        else:
+            agents_agreement = format_agents_agreement(
+                results,
+                filter_result.direction,
+                config=self.signal_filter.decision_config,
+            )
         if self.publish_signal_fn is not None:
             publish_kwargs = {
                 "symbol": symbol,

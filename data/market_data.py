@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
@@ -186,8 +187,14 @@ def build_scalp_market_data_provider() -> MarketDataProvider:
 
 
 def build_main_market_data_provider(settings: Settings) -> MarketDataProvider:
-    """Main Trading Boss provider — OANDA or Yahoo spot gold for XAUUSD."""
-    if settings.oanda_api_key.strip():
+    """Main Trading Boss provider — Binance XAUUSDT (same as SPACE/scalp)."""
+    use_oanda = os.getenv("MAIN_XAUUSD_USE_OANDA", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+    if use_oanda and settings.oanda_api_key.strip():
         return MarketDataProvider(
             symbol_provider_overrides={"XAUUSD": "oanda"},
             oanda_api_key=settings.oanda_api_key,
@@ -195,9 +202,7 @@ def build_main_market_data_provider(settings: Settings) -> MarketDataProvider:
             oanda_env=settings.oanda_env,
         )
 
-    return MarketDataProvider(
-        symbol_provider_overrides={"XAUUSD": "index"},
-    )
+    return MarketDataProvider()
 
 
 def get_market_data(

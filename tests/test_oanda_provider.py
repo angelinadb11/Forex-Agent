@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import unittest
 from unittest.mock import MagicMock, patch
 
@@ -63,16 +64,17 @@ class IndexProviderGoldTests(unittest.TestCase):
 
 
 class MarketDataProviderRoutingTests(unittest.TestCase):
-    def test_main_provider_routes_xauusd_to_oanda(self) -> None:
+    def test_main_provider_uses_binance_for_xauusd(self) -> None:
         settings = Settings(oanda_api_key="test-token", oanda_account_id="101-001-1")
         provider = build_main_market_data_provider(settings)
-        self.assertEqual(provider.data_source("XAUUSD"), "oanda")
+        self.assertEqual(provider.data_source("XAUUSD"), "binance")
         self.assertEqual(provider.data_source("BTCUSDT"), "binance")
 
-    def test_main_provider_falls_back_to_yahoo_without_oanda(self) -> None:
-        settings = Settings(oanda_api_key="")
-        provider = build_main_market_data_provider(settings)
-        self.assertEqual(provider.data_source("XAUUSD"), "yahoo_finance")
+    def test_main_provider_uses_oanda_only_when_explicitly_enabled(self) -> None:
+        settings = Settings(oanda_api_key="test-token", oanda_account_id="101-001-1")
+        with patch.dict(os.environ, {"MAIN_XAUUSD_USE_OANDA": "1"}, clear=False):
+            provider = build_main_market_data_provider(settings)
+        self.assertEqual(provider.data_source("XAUUSD"), "oanda")
         self.assertEqual(provider.data_source("BTCUSDT"), "binance")
 
     def test_scalp_provider_keeps_binance_for_xauusd(self) -> None:

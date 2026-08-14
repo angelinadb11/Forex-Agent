@@ -221,14 +221,15 @@ def build_bot_runtime(
         if dual_tier
         else KillzoneWindowGate(max_signals_per_window=1, include_asian=False)
     )
-    if settings.oanda_api_key.strip():
+    main_xau_source = main_provider.data_source("XAUUSD")
+    if main_xau_source == "oanda":
         logger.info(
             "Main channel XAUUSD pricing: OANDA v20 (%s)",
             settings.oanda_env,
         )
     else:
         logger.info(
-            "Main channel XAUUSD pricing: Yahoo Finance (GC=F COMEX gold, forex-like)"
+            "Main channel XAUUSD pricing: Binance XAUUSDT (same as SPACE/scalp)"
         )
     logger.info("SPACE/scalp streams: Binance XAUUSDT (unchanged)")
 

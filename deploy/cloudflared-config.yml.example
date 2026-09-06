@@ -1,0 +1,15 @@
+# Copy to /etc/cloudflared/config.yml after creating a named tunnel.
+# See tools/setup_tv_systemd.sh or docs below.
+#
+# 1) cloudflared tunnel login
+# 2) cloudflared tunnel create forex-tv
+# 3) cloudflared tunnel route dns forex-tv tv.YOUR-DOMAIN.com
+# 4) Replace TUNNEL_ID and credentials path below.
+
+tunnel: TUNNEL_ID
+credentials-file: /root/.cloudflared/TUNNEL_ID.json
+
+ingress:
+  - hostname: tv.YOUR-DOMAIN.com
+    service: http://127.0.0.1:8788
+  - service: http_status:404

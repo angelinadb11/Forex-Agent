@@ -1,0 +1,13 @@
+[Unit]
+Description=Cloudflare Tunnel for TradingView webhook (HTTPS)
+After=network-online.target tradingview-webhook.service
+Wants=tradingview-webhook.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/cloudflared tunnel --config /etc/cloudflared/config.yml run
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

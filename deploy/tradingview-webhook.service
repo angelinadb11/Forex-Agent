@@ -1,0 +1,15 @@
+[Unit]
+Description=TradingView webhook to Telegram (main channel)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/root/Forex-Agent
+EnvironmentFile=/root/Forex-Agent/.env
+ExecStart=/root/Forex-Agent/.venv/bin/python tools/tradingview_webhook.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

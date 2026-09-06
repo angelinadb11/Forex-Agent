@@ -5,6 +5,7 @@ import time
 from typing import Callable
 
 from agents.base import AgentResult
+from config.market_hours import should_publish_forex_signal
 from config.symbols import resolve_symbol
 from data import MarketDataProvider
 from runtime.dedup import SignalDedupGate
@@ -246,7 +247,16 @@ class BotRuntime:
                     trade.result,
                 )
 
+    def _forex_market_allows_signals(self, *, channel: str) -> bool:
+        allowed, reason = should_publish_forex_signal()
+        if not allowed:
+            self.logger.debug("%s scan skipped: %s", channel, reason)
+        return allowed
+
     def _scan_all_symbols(self) -> None:
+        if not self._forex_market_allows_signals(channel="Main"):
+            return
+
         open_symbols = self._open_symbols()
         for symbol in self.symbols:
             display_symbol = resolve_symbol(symbol).display
@@ -374,6 +384,8 @@ class BotRuntime:
     def _scan_scalp_all_symbols(self) -> None:
         if self.analyze_scalp_fn is None:
             return
+        if not self._forex_market_allows_signals(channel="Scalp"):
+            return
 
         open_symbols = self._scalp_open_symbols(timeframe=self.scalp_timeframe)
         for symbol in self.symbols:
@@ -474,6 +486,8 @@ class BotRuntime:
     def _scan_premium_scalp_all_symbols(self) -> None:
         if self.analyze_premium_scalp_fn is None or self.premium_dedup is None:
             return
+        if not self._forex_market_allows_signals(channel="VIP premium"):
+            return
 
         open_symbols = self._scalp_open_symbols(timeframe=self.premium_timeframe)
         for symbol in self.symbols:
@@ -545,6 +559,8 @@ class BotRuntime:
 
     def _scan_turtle_soup_scalp_all_symbols(self) -> None:
         if self.analyze_turtle_soup_scalp_fn is None or self.turtle_dedup is None:
+            return
+        if not self._forex_market_allows_signals(channel="VIP2 Turtle Soup"):
             return
 
         open_symbols = self._scalp_open_symbols(timeframe=self.turtle_timeframe)

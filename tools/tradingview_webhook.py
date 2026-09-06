@@ -38,6 +38,7 @@ from dotenv import load_dotenv
 
 from agents.base import Direction
 from config.settings import PROJECT_ROOT as SETTINGS_ROOT
+from config.market_hours import should_publish_forex_signal
 from telegram.message_format import format_tradingview_alert
 from telegram.telegram_bot import TelegramBot, TelegramError
 from webhook.tradingview import parse_tradingview_payload
@@ -94,6 +95,15 @@ class TradingViewWebhookHandler(BaseHTTPRequestHandler):
                     self,
                     400,
                     {"ok": False, "error": "Direction missing (use BUY/SELL in JSON)"},
+                )
+                return
+
+            allowed, skip_reason = should_publish_forex_signal()
+            if not allowed:
+                _json_response(
+                    self,
+                    200,
+                    {"ok": True, "skipped": True, "reason": skip_reason},
                 )
                 return
 

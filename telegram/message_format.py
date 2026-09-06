@@ -261,7 +261,9 @@ def format_tradingview_alert(
         "",
         f"Enter: {_level(alert.entry)}",
         f"SL: {_level(alert.stop_loss)}",
-        f"TP: {_level(alert.tp1)}",
+        f"TP1: {_level(alert.tp1)}",
+        f"TP2: {_level(alert.tp2)}",
+        f"TP3: {_level(alert.tp3)}",
         "",
         f"⏱ Таймфрейм: {_timeframe_display()}",
     ]

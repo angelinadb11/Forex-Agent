@@ -45,18 +45,22 @@ class TradingViewFormatTests(unittest.TestCase):
         self.assertIn("🟢 XAUUSD BUY (UPF)", message)
         self.assertIn("Enter: 4400.00", message)
         self.assertIn("SL: —", message)
-        self.assertIn("TP: —", message)
+        self.assertIn("TP1: —", message)
+        self.assertIn("TP2: —", message)
+        self.assertIn("TP3: —", message)
         self.assertIn("⏱ Таймфрейм: 5m", message)
 
     def test_formats_sell_with_levels(self) -> None:
         alert = parse_tradingview_payload(
-            '{"symbol":"XAUUSD","action":"SELL","entry":4430.55,"sl":4435,"tp":4420,"timeframe":"5"}'
+            '{"symbol":"XAUUSD","action":"SELL","entry":4430.55,"sl":4435,"tp1":4420,"tp2":4410,"tp3":4400,"timeframe":"5"}'
         )
         message = format_tradingview_alert(alert)
         self.assertIn("🔴 XAUUSD SELL (UPF)", message)
         self.assertIn("Enter: 4430.55", message)
         self.assertIn("SL: 4435.00", message)
-        self.assertIn("TP: 4420.00", message)
+        self.assertIn("TP1: 4420.00", message)
+        self.assertIn("TP2: 4410.00", message)
+        self.assertIn("TP3: 4400.00", message)
 
 
 if __name__ == "__main__":

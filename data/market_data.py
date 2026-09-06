@@ -14,6 +14,7 @@ from data.providers.base import (
 )
 from data.providers.binance_provider import BinanceProvider
 from data.providers.index_provider import IndexProvider
+from data.providers.mt5_bridge_provider import Mt5BridgeProvider
 from data.providers.oanda_provider import OandaProvider
 
 
@@ -37,6 +38,9 @@ class MarketDataProvider:
         oanda_api_key: str = "",
         oanda_account_id: str = "",
         oanda_env: str = "practice",
+        mt5_bridge_url: str = "",
+        mt5_bridge_token: str = "",
+        mt5_symbol: str = "XAUUSD",
     ) -> None:
         self._symbol_provider_overrides: dict[str, str] = {}
         for symbol, provider_name in (symbol_provider_overrides or {}).items():
@@ -52,6 +56,12 @@ class MarketDataProvider:
                 api_key=oanda_api_key,
                 account_id=oanda_account_id,
                 env=oanda_env,
+            )
+        if mt5_bridge_url.strip():
+            self._providers["mt5"] = Mt5BridgeProvider(
+                mt5_bridge_url,
+                broker_symbol=mt5_symbol,
+                bridge_token=mt5_bridge_token,
             )
 
     def resolve(self, symbol: str):
@@ -89,6 +99,10 @@ class MarketDataProvider:
             metadata["source"] = "oanda"
             metadata["market"] = "cfd"
             metadata["instrument"] = provider.instrument_for(symbol_def.data_symbol)
+        elif isinstance(provider, Mt5BridgeProvider):
+            metadata["source"] = "mt5"
+            metadata["market"] = "cfd"
+            metadata["broker_symbol"] = provider.broker_symbol_for(symbol_def.data_symbol)
         elif isinstance(provider, IndexProvider):
             metadata["source"] = "yahoo_finance"
             metadata["market"] = "index"
@@ -131,6 +145,8 @@ class MarketDataProvider:
             return "binance"
         if isinstance(provider, OandaProvider):
             return "oanda"
+        if isinstance(provider, Mt5BridgeProvider):
+            return "mt5"
         return "yahoo_finance"
 
     def get_current_price(self, symbol: str) -> float:
@@ -162,6 +178,12 @@ class MarketDataProvider:
                 timeframe,
                 total_candles,
             )
+        if isinstance(provider, Mt5BridgeProvider):
+            return provider.get_historical_market_data(
+                symbol_def.data_symbol,
+                timeframe,
+                total_candles,
+            )
 
         return provider.get_market_data(
             symbol_def.data_symbol,
@@ -182,19 +204,25 @@ class MarketDataProvider:
 
 
 def build_scalp_market_data_provider() -> MarketDataProvider:
-    """Default provider for SPACE/scalp streams (Binance XAUUSDT)."""
+    """SPACE/scalp/VIP streams only — always Binance XAUUSDT (never MT5/OANDA)."""
     return MarketDataProvider()
 
 
+def _env_enabled(name: str) -> bool:
+    return os.getenv(name, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
 def build_main_market_data_provider(settings: Settings) -> MarketDataProvider:
-    """Main Trading Boss provider — Binance XAUUSDT (same as SPACE/scalp)."""
-    use_oanda = os.getenv("MAIN_XAUUSD_USE_OANDA", "").strip().lower() in {
-        "1",
-        "true",
-        "yes",
-        "on",
-    }
-    if use_oanda and settings.oanda_api_key.strip():
+    """Main Trading Boss provider — MT5 broker, OANDA, or Binance (SPACE stays Binance)."""
+    if _env_enabled("MAIN_XAUUSD_USE_MT5") and settings.mt5_bridge_url.strip():
+        return MarketDataProvider(
+            symbol_provider_overrides={"XAUUSD": "mt5"},
+            mt5_bridge_url=settings.mt5_bridge_url,
+            mt5_bridge_token=settings.mt5_bridge_token,
+            mt5_symbol=settings.mt5_symbol,
+        )
+
+    if _env_enabled("MAIN_XAUUSD_USE_OANDA") and settings.oanda_api_key.strip():
         return MarketDataProvider(
             symbol_provider_overrides={"XAUUSD": "oanda"},
             oanda_api_key=settings.oanda_api_key,

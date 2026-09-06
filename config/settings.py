@@ -49,6 +49,10 @@ class Settings:
     oanda_api_key: str = ""
     oanda_account_id: str = ""
     oanda_env: str = "practice"
+    main_xauusd_use_mt5: bool = False
+    mt5_bridge_url: str = ""
+    mt5_bridge_token: str = ""
+    mt5_symbol: str = "XAUUSD"
     trading_boss_killzone_profile: str = "precision"
     trading_boss_killzone_frequency: str = "balanced"
     trading_boss_dual_tier: bool = True
@@ -110,6 +114,11 @@ def load_settings() -> Settings:
         oanda_api_key=os.getenv("OANDA_API_KEY", ""),
         oanda_account_id=os.getenv("OANDA_ACCOUNT_ID", ""),
         oanda_env=os.getenv("OANDA_ENV", "practice"),
+        main_xauusd_use_mt5=os.getenv("MAIN_XAUUSD_USE_MT5", "0").strip().lower()
+        in {"1", "true", "yes", "on"},
+        mt5_bridge_url=os.getenv("MT5_BRIDGE_URL", ""),
+        mt5_bridge_token=os.getenv("MT5_BRIDGE_TOKEN", ""),
+        mt5_symbol=os.getenv("MT5_SYMBOL", "XAUUSD"),
         trading_boss_killzone_profile=os.getenv(
             "TRADING_BOSS_KILLZONE_PROFILE",
             "precision",

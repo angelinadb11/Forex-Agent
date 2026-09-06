@@ -222,16 +222,23 @@ def build_bot_runtime(
         else KillzoneWindowGate(max_signals_per_window=1, include_asian=False)
     )
     main_xau_source = main_provider.data_source("XAUUSD")
-    if main_xau_source == "oanda":
+    if main_xau_source == "mt5":
+        logger.info(
+            "Main channel XAUUSD pricing: MT5 broker %s (Moneta/broker via bridge)",
+            settings.mt5_symbol,
+        )
+    elif main_xau_source == "oanda":
         logger.info(
             "Main channel XAUUSD pricing: OANDA v20 (%s)",
             settings.oanda_env,
         )
     else:
         logger.info(
-            "Main channel XAUUSD pricing: Binance XAUUSDT (same as SPACE/scalp)"
+            "Main channel XAUUSD pricing: Binance XAUUSDT"
         )
-    logger.info("SPACE/scalp streams: Binance XAUUSDT (unchanged)")
+    logger.info(
+        "SPACE/scalp/VIP streams: Binance XAUUSDT only (unchanged, separate from main)"
+    )
 
     signal_filter = SignalFilter.from_profile(
         MAIN_CHANNEL_FILTER_PROFILE,

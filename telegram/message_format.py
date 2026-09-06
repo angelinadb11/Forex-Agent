@@ -223,6 +223,59 @@ def format_trade_signal(
     return "\n".join(lines)
 
 
+def format_tradingview_alert(
+    alert: "TradingViewAlert",
+) -> str:
+    """Format a TradingView indicator alert for the main Trading Boss channel."""
+    from webhook.tradingview import TradingViewAlert as _Alert
+
+    if not isinstance(alert, _Alert):
+        raise TypeError("alert must be TradingViewAlert")
+
+    direction_label = format_scalp_direction_label(alert.direction)
+    lines = [
+        "📊 TRADINGVIEW → Trading Boss",
+        "Окремий сигнал з індикатора (не від бота)",
+        "",
+        f"{alert.symbol} {direction_label}",
+    ]
+
+    if alert.has_levels:
+        lines.extend(
+            [
+                "",
+                f"Вхід: {alert.entry:.2f}",
+                f"Стоп: {alert.stop_loss:.2f}",
+            ]
+        )
+        if alert.tp1 is not None:
+            lines.append(f"✅ ТП1: {alert.tp1:.2f}")
+        if alert.tp2 is not None:
+            lines.append(f"✅ ТП2: {alert.tp2:.2f}")
+        if alert.tp3 is not None:
+            lines.append(f"✅ ТП3: {alert.tp3:.2f}")
+        lines.extend(
+            [
+                "",
+                f"ТФ: {format_timeframe_label(alert.timeframe)}",
+            ]
+        )
+    else:
+        lines.extend(["", alert.note or alert.raw_text])
+
+    if alert.note and alert.has_levels:
+        lines.extend(["", alert.note])
+
+    lines.extend(
+        [
+            "",
+            "Джерело: TradingView",
+            "Перевір рівні в Moneta перед входом.",
+        ]
+    )
+    return "\n".join(lines)
+
+
 def format_trading_boss_trade_signal(
     symbol: str,
     signal: TradeSignal,

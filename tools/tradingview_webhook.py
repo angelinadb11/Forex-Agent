@@ -26,18 +26,23 @@ import json
 import os
 import sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 from dotenv import load_dotenv
 
 from agents.base import Direction
-from config.settings import PROJECT_ROOT
+from config.settings import PROJECT_ROOT as SETTINGS_ROOT
 from telegram.message_format import format_tradingview_alert
 from telegram.telegram_bot import TelegramBot, TelegramError
 from webhook.tradingview import parse_tradingview_payload
 
-load_dotenv(PROJECT_ROOT / ".env")
+load_dotenv(SETTINGS_ROOT / ".env")
 
 WEBHOOK_SECRET = os.getenv("TRADINGVIEW_WEBHOOK_SECRET", "").strip()
 WEBHOOK_HOST = os.getenv("TRADINGVIEW_WEBHOOK_HOST", "127.0.0.1")

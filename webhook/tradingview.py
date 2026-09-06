@@ -22,11 +22,12 @@ class TradingViewAlert:
     timeframe: str
     note: str
     raw_text: str
+    source: str = "UPF"
     secret: str | None = None
 
     @property
     def has_levels(self) -> bool:
-        return self.entry is not None and self.stop_loss is not None
+        return self.entry is not None
 
 
 def _parse_direction(raw: object) -> Direction:
@@ -123,12 +124,13 @@ def parse_tradingview_payload(body: str) -> TradingViewAlert:
             direction=direction,
             entry=_parse_float(payload.get("entry") or payload.get("price")),
             stop_loss=_parse_float(payload.get("sl") or payload.get("stop_loss") or payload.get("stop")),
-            tp1=_parse_float(payload.get("tp1") or payload.get("take_profit")),
+            tp1=_parse_float(payload.get("tp") or payload.get("tp1") or payload.get("take_profit")),
             tp2=_parse_float(payload.get("tp2")),
             tp3=_parse_float(payload.get("tp3")),
             timeframe=_normalize_timeframe(payload.get("timeframe") or payload.get("interval")),
             note=str(payload.get("note") or payload.get("message") or "").strip(),
             raw_text=text,
+            source=str(payload.get("source") or payload.get("tag") or "UPF").strip() or "UPF",
             secret=str(payload.get("secret") or payload.get("token") or "").strip() or None,
         )
 

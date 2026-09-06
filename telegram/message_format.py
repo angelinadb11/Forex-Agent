@@ -232,47 +232,39 @@ def format_tradingview_alert(
     if not isinstance(alert, _Alert):
         raise TypeError("alert must be TradingViewAlert")
 
-    direction_label = format_scalp_direction_label(alert.direction)
+    def _level(value: float | None) -> str:
+        return f"{value:.2f}" if value is not None else "—"
+
+    def _action_label() -> str:
+        if alert.direction == Direction.LONG:
+            return "BUY"
+        if alert.direction == Direction.SHORT:
+            return "SELL"
+        return "NEUTRAL"
+
+    def _header_emoji() -> str:
+        if alert.direction == Direction.LONG:
+            return "🟢"
+        if alert.direction == Direction.SHORT:
+            return "🔴"
+        return "⚪"
+
+    def _timeframe_display() -> str:
+        tf = alert.timeframe.strip()
+        if tf.endswith("m") or tf.endswith("h"):
+            return tf
+        return format_timeframe_label(tf)
+
+    source = f" ({alert.source})" if alert.source else ""
     lines = [
-        "📊 TRADINGVIEW → Trading Boss",
-        "Окремий сигнал з індикатора (не від бота)",
+        f"{_header_emoji()} {alert.symbol} {_action_label()}{source}",
         "",
-        f"{alert.symbol} {direction_label}",
+        f"Enter: {_level(alert.entry)}",
+        f"SL: {_level(alert.stop_loss)}",
+        f"TP: {_level(alert.tp1)}",
+        "",
+        f"⏱ Таймфрейм: {_timeframe_display()}",
     ]
-
-    if alert.has_levels:
-        lines.extend(
-            [
-                "",
-                f"Вхід: {alert.entry:.2f}",
-                f"Стоп: {alert.stop_loss:.2f}",
-            ]
-        )
-        if alert.tp1 is not None:
-            lines.append(f"✅ ТП1: {alert.tp1:.2f}")
-        if alert.tp2 is not None:
-            lines.append(f"✅ ТП2: {alert.tp2:.2f}")
-        if alert.tp3 is not None:
-            lines.append(f"✅ ТП3: {alert.tp3:.2f}")
-        lines.extend(
-            [
-                "",
-                f"ТФ: {format_timeframe_label(alert.timeframe)}",
-            ]
-        )
-    else:
-        lines.extend(["", alert.note or alert.raw_text])
-
-    if alert.note and alert.has_levels:
-        lines.extend(["", alert.note])
-
-    lines.extend(
-        [
-            "",
-            "Джерело: TradingView",
-            "Перевір рівні в Moneta перед входом.",
-        ]
-    )
     return "\n".join(lines)
 
 

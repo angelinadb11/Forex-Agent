@@ -37,15 +37,26 @@ class TradingViewParseTests(unittest.TestCase):
 
 
 class TradingViewFormatTests(unittest.TestCase):
-    def test_formats_message(self) -> None:
+    def test_formats_buy_message(self) -> None:
         alert = parse_tradingview_payload(
-            '{"symbol":"XAUUSD","action":"BUY","entry":4400,"sl":4390,"tp1":4410,"timeframe":"5m","note":"test"}'
+            '{"symbol":"XAUUSD","action":"BUY","entry":4400,"timeframe":"5m","source":"UPF"}'
         )
         message = format_tradingview_alert(alert)
-        self.assertIn("TRADINGVIEW", message)
-        self.assertIn("XAUUSD", message)
-        self.assertIn("КУПИТИ", message)
-        self.assertIn("4400.00", message)
+        self.assertIn("🟢 XAUUSD BUY (UPF)", message)
+        self.assertIn("Enter: 4400.00", message)
+        self.assertIn("SL: —", message)
+        self.assertIn("TP: —", message)
+        self.assertIn("⏱ Таймфрейм: 5m", message)
+
+    def test_formats_sell_with_levels(self) -> None:
+        alert = parse_tradingview_payload(
+            '{"symbol":"XAUUSD","action":"SELL","entry":4430.55,"sl":4435,"tp":4420,"timeframe":"5"}'
+        )
+        message = format_tradingview_alert(alert)
+        self.assertIn("🔴 XAUUSD SELL (UPF)", message)
+        self.assertIn("Enter: 4430.55", message)
+        self.assertIn("SL: 4435.00", message)
+        self.assertIn("TP: 4420.00", message)
 
 
 if __name__ == "__main__":
